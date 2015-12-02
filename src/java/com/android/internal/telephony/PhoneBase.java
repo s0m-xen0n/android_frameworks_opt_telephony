@@ -46,6 +46,7 @@ import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
 import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.telephony.VoLteServiceState;
 import android.telephony.ModemActivityInfo;
 import android.text.TextUtils;
@@ -110,6 +111,7 @@ public abstract class PhoneBase extends Handler implements Phone {
                 if (intent.getAction().equals(ImsManager.ACTION_IMS_SERVICE_UP)) {
                     mImsServiceReady = true;
                     updateImsPhone();
+                    ImsManager.updateImsServiceConfig(mContext, mPhoneId, false);
                 } else if (intent.getAction().equals(ImsManager.ACTION_IMS_SERVICE_DOWN)) {
                     mImsServiceReady = false;
                     updateImsPhone();
@@ -179,6 +181,7 @@ public abstract class PhoneBase extends Handler implements Phone {
     protected static final int EVENT_SS                             = 36;
     protected static final int EVENT_CONFIG_LCE                     = 37;
     private static final int EVENT_CHECK_FOR_NETWORK_AUTOMATIC      = 38;
+    protected static final int EVENT_GET_CALLFORWARDING_STATUS      = 39;
     // MTK
     protected static final int EVENT_GET_PHONE_RAT_FAMILY              = 41;
     protected static final int EVENT_PHONE_RAT_FAMILY_CHANGED_NOTIFY   = 42;
@@ -209,6 +212,13 @@ public abstract class PhoneBase extends Handler implements Phone {
     public static final String VM_COUNT = "vm_count_key";
     // Key used to read/write the ID for storing the voice mail
     public static final String VM_ID = "vm_id_key";
+
+    // Key used to read/write the SIM IMSI used for storing the imsi
+    public static final String SIM_IMSI = "sim_imsi_key";
+    // Key used to read/write SIM IMSI used for storing the imsi
+    public static final String VM_SIM_IMSI = "vm_sim_imsi_key";
+    // Key used to read/write if Call Forwarding is enabled
+    public static final String CF_ENABLED = "cf_enabled_key";
 
     // Key used to read/write "disable DNS server check" pref (used for testing)
     public static final String DNS_SERVER_CHECK_DISABLED_KEY = "dns_server_check_disabled_key";
@@ -527,6 +537,7 @@ public abstract class PhoneBase extends Handler implements Phone {
             if (imsManager != null && imsManager.isServiceAvailable()) {
                 mImsServiceReady = true;
                 updateImsPhone();
+                ImsManager.updateImsServiceConfig(mContext, mPhoneId, false);
             }
         }
     }
@@ -836,6 +847,9 @@ public abstract class PhoneBase extends Handler implements Phone {
        mHandoverRegistrants.notifyRegistrants(ar);
     }
 
+    protected void setIsInEmergencyCall() {
+    }
+
     public void migrateFrom(PhoneBase from) {
         migrate(mHandoverRegistrants, from.mHandoverRegistrants);
         migrate(mPreciseCallStateRegistrants, from.mPreciseCallStateRegistrants);
@@ -847,6 +861,9 @@ public abstract class PhoneBase extends Handler implements Phone {
         migrate(mMmiRegistrants, from.mMmiRegistrants);
         migrate(mUnknownConnectionRegistrants, from.mUnknownConnectionRegistrants);
         migrate(mSuppServiceFailedRegistrants, from.mSuppServiceFailedRegistrants);
+        if (from.isInEmergencyCall()) {
+            setIsInEmergencyCall();
+        }
     }
 
     public void migrate(RegistrantList to, RegistrantList from) {
@@ -1057,31 +1074,25 @@ public abstract class PhoneBase extends Handler implements Phone {
                 // send the setting on error
             }
         }
-        if (doAutomatic) {
-            // wrap the response message in our own message along with
-            // an empty string (to indicate automatic selection) for the
-            // operator's id.
-            NetworkSelectMessage nsm = new NetworkSelectMessage();
-            nsm.message = response;
-            nsm.operatorNumeric = "";
-            nsm.operatorAlphaLong = "";
-            nsm.operatorAlphaShort = "";
 
+        // wrap the response message in our own message along with
+        // an empty string (to indicate automatic selection) for the
+        // operator's id.
+        NetworkSelectMessage nsm = new NetworkSelectMessage();
+        nsm.message = response;
+        nsm.operatorNumeric = "";
+        nsm.operatorAlphaLong = "";
+        nsm.operatorAlphaShort = "";
+
+        if (doAutomatic) {
             Message msg = obtainMessage(EVENT_SET_NETWORK_AUTOMATIC_COMPLETE, nsm);
             mCi.setNetworkSelectionModeAutomatic(msg);
-
-            updateSavedNetworkOperator(nsm);
         } else {
             Rlog.d(LOG_TAG, "setNetworkSelectionModeAutomatic - already auto, ignoring");
-            // since the Network selection mode is already set to
-            // automatic, sendresponse with the result considering
-            // it as successful for those expecting it.
-            if (response != null) {
-                AsyncResult.forMessage(response, null, null);
-                response.sendToTarget();
-            }
-
+            ar.userObj = nsm;
+            handleSetSelectNetwork(ar);
         }
+
     }
 
     @Override
@@ -1090,7 +1101,8 @@ public abstract class PhoneBase extends Handler implements Phone {
     }
 
     @Override
-    public void selectNetworkManually(OperatorInfo network, Message response) {
+    public void selectNetworkManually(OperatorInfo network, boolean persistSelection,
+            Message response) {
         // wrap the response message in our own message along with
         // the operator's id.
         NetworkSelectMessage nsm = new NetworkSelectMessage();
@@ -1107,7 +1119,11 @@ public abstract class PhoneBase extends Handler implements Phone {
                     + "+" + network.getRadioTech(), msg);
         }
 
-        updateSavedNetworkOperator(nsm);
+        if (persistSelection) {
+            updateSavedNetworkOperator(nsm);
+        } else {
+            clearSavedNetworkSelection();
+        }
     }
 
     /**
@@ -1182,6 +1198,17 @@ public abstract class PhoneBase extends Handler implements Phone {
     }
 
     /**
+     * Clears the saved network selection.
+     */
+    private void clearSavedNetworkSelection() {
+        // open the shared preferences and search with our key.
+        PreferenceManager.getDefaultSharedPreferences(getContext()).edit().
+                remove(NETWORK_SELECTION_KEY + getSubId()).
+                remove(NETWORK_SELECTION_NAME_KEY + getSubId()).
+                remove(NETWORK_SELECTION_SHORT_KEY + getSubId()).commit();
+    }
+
+    /**
      * Method to restore the previously saved operator id, or reset to
      * automatic selection, all depending upon the value in the shared
      * preferences.
@@ -1194,7 +1221,23 @@ public abstract class PhoneBase extends Handler implements Phone {
         if (networkSelection == null || TextUtils.isEmpty(networkSelection.getOperatorNumeric())) {
             setNetworkSelectionModeAutomatic(response);
         } else {
-            selectNetworkManually(networkSelection, response);
+            selectNetworkManually(networkSelection, true, response);
+        }
+    }
+
+    /**
+     * Saves CLIR setting so that we can re-apply it as necessary
+     * (in case the RIL resets it across reboots).
+     */
+    public void saveClirSetting(int commandInterfaceCLIRMode) {
+        // Open the shared preferences editor, and write the value.
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(getContext());
+        SharedPreferences.Editor editor = sp.edit();
+        editor.putInt(CLIR_KEY + getPhoneId(), commandInterfaceCLIRMode);
+
+        // Commit and log the result.
+        if (!editor.commit()) {
+            Rlog.e(LOG_TAG, "Failed to commit CLIR preference");
         }
     }
 
@@ -1474,6 +1517,89 @@ public abstract class PhoneBase extends Handler implements Phone {
     public boolean getCallForwardingIndicator() {
         IccRecords r = mIccRecords.get();
         return (r != null) ? r.getVoiceCallForwardingFlag() : false;
+    }
+
+    /**
+     * This method stores the CF_ENABLED flag in preferences
+     * @param enabled
+     */
+    public void setCallForwardingPreference(boolean enabled) {
+        Rlog.d(LOG_TAG, "Set callforwarding info to perferences");
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(mContext);
+        SharedPreferences.Editor edit = sp.edit();
+        edit.putBoolean(CF_ENABLED + getSubId(), enabled);
+        edit.commit();
+
+        // set the sim imsi to be able to track when the sim card is changed.
+        setSimImsi(getSubscriberId());
+    }
+
+    public boolean getCallForwardingPreference() {
+        Rlog.d(LOG_TAG, "Get callforwarding info from perferences");
+
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(mContext);
+        boolean cf = false;
+        // Migrate CF enabled flag from phoneid based preference to subId based.
+        boolean needMigration = false;
+        String oldCfKey = null;
+        if (TelephonyManager.getDefault().isMultiSimEnabled()) {
+            if (!sp.contains(CF_ENABLED + getSubId()) && sp.contains(CF_ENABLED + mPhoneId)) {
+                oldCfKey = CF_ENABLED + mPhoneId;
+                needMigration = true;
+            }
+        } else {
+            if (!sp.contains(CF_ENABLED + getSubId()) && sp.contains(CF_ENABLED)) {
+                oldCfKey = CF_ENABLED;
+                needMigration = true;
+            }
+        }
+        if (needMigration) {
+            // Save cf flag based on subId and remove old preference
+            cf = sp.getBoolean(oldCfKey, false);
+            setCallForwardingPreference(cf);
+            SharedPreferences.Editor edit = sp.edit();
+            edit.remove(oldCfKey);
+            edit.commit();
+            return cf;
+        }
+        cf = sp.getBoolean(CF_ENABLED + getSubId(), false);
+        return cf;
+    }
+
+    public String getSimImsi() {
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(getContext());
+        boolean needMigration = false;
+        String oldImsiKey = null;
+        if (TelephonyManager.getDefault().isMultiSimEnabled()) {
+            //Migrate sim_imsi value for msim
+            if (!sp.contains(SIM_IMSI + getSubId()) && sp.contains(VM_SIM_IMSI + mPhoneId)) {
+                oldImsiKey = VM_SIM_IMSI + mPhoneId;
+                needMigration = true;
+            }
+        } else {
+            //Migrate sim_imsi value for single sim
+            if (!sp.contains(SIM_IMSI + getSubId()) && sp.contains(VM_SIM_IMSI)) {
+                oldImsiKey = VM_SIM_IMSI;
+                needMigration = true;
+            }
+        }
+        if (needMigration) {
+            // Save imsi based on subId and remove old preference
+            String imsi = sp.getString(oldImsiKey, null);
+            setSimImsi(imsi);
+            SharedPreferences.Editor editor = sp.edit();
+            editor.remove(oldImsiKey);
+            editor.commit();
+            return imsi;
+        }
+        return sp.getString(SIM_IMSI + getSubId(), null);
+    }
+
+    public void setSimImsi(String imsi) {
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(getContext());
+        SharedPreferences.Editor editor = sp.edit();
+        editor.putString(SIM_IMSI + getSubId(), imsi);
+        editor.apply();
     }
 
     /**
@@ -2144,6 +2270,22 @@ public abstract class PhoneBase extends Handler implements Phone {
         return mCi.getLteOnCdmaMode();
     }
 
+    /**
+     * {@hide}
+     */
+    @Override
+    public int getLteOnGsmMode() {
+        return mCi.getLteOnGsmMode();
+    }
+
+    /**
+     * Sets the SIM voice message waiting indicator records.
+     * @param line GSM Subscriber Profile Number, one-based. Only '1' is supported
+     * @param countWaiting The number of messages waiting, if known. Use
+     *                     -1 to indicate that an unknown number of
+     *                      messages are waiting
+     */
+    @Override
     public void setVoiceMessageWaiting(int line, int countWaiting) {
         // This function should be overridden by class GSMPhone and CDMAPhone.
         Rlog.e(LOG_TAG, "Error! This function should never be executed, inactive Phone.");
@@ -2442,6 +2584,11 @@ public abstract class PhoneBase extends Handler implements Phone {
     @Override
     public void shutdownRadio() {
         getServiceStateTracker().requestShutdown();
+    }
+
+    @Override
+    public boolean isShuttingDown() {
+        return getServiceStateTracker().isDeviceShuttingDown();
     }
 
     @Override

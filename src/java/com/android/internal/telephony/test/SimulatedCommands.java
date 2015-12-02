@@ -1739,6 +1739,11 @@ public final class SimulatedCommands extends BaseCommands
     }
 
     @Override
+    public void getAtr(Message response) {
+        unimplemented(response);
+    }
+
+    @Override
     public void nvReadItem(int itemID, Message response) {
         unimplemented(response);
     }
@@ -1787,6 +1792,8 @@ public final class SimulatedCommands extends BaseCommands
     public void getModemActivityInfo(Message result) {
         unimplemented(result);
     }
+
+    public boolean needsOldRilFeature(String feature) { return false; }
 
     // MTK additions
 

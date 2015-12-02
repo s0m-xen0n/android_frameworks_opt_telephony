@@ -22,6 +22,7 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -31,6 +32,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.telephony.RadioAccessFamily;
 import android.telephony.Rlog;
@@ -286,12 +288,14 @@ public class SubscriptionController extends ISub.Stub {
                 SubscriptionManager.MNC));
         // FIXME: consider stick this into database too
         String countryIso = getSubscriptionCountryIso(id);
+        int userNwMode = cursor.getInt(cursor.getColumnIndexOrThrow(
+                SubscriptionManager.USER_NETWORK_MODE));
 
         if (DBG) {
             logd("[getSubInfoRecord] id:" + id + " iccid:" + iccId + " simSlotIndex:" + simSlotIndex
                 + " displayName:" + displayName + " nameSource:" + nameSource
                 + " iconTint:" + iconTint + " dataRoaming:" + dataRoaming
-                + " mcc:" + mcc + " mnc:" + mnc + " countIso:" + countryIso);
+                + " mcc:" + mcc + " mnc:" + mnc + " countIso:" + countryIso + " userNwMode:" + userNwMode);
         }
 
         // If line1number has been set to a different number, use it instead.
@@ -300,7 +304,7 @@ public class SubscriptionController extends ISub.Stub {
             number = line1Number;
         }
         return new SubscriptionInfo(id, iccId, simSlotIndex, displayName, carrierName,
-                nameSource, iconTint, number, dataRoaming, iconBitmap, mcc, mnc, countryIso);
+                nameSource, iconTint, number, dataRoaming, iconBitmap, mcc, mnc, countryIso, userNwMode);
     }
 
     /**
@@ -1404,7 +1408,7 @@ public class SubscriptionController extends ISub.Stub {
     public void setDefaultDataSubId(int subId) {
         enforceModifyPhoneState("setDefaultDataSubId");
         String flexMapSupportType =
-                SystemProperties.get("persist.radio.flexmap", "nw_mode");
+                SystemProperties.get("persist.radio.flexmap_type", "nw_mode");
 
         if (subId == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) {
             throw new RuntimeException("setDefaultDataSubId called with DEFAULT_SUB_ID");
@@ -1665,6 +1669,16 @@ public class SubscriptionController extends ISub.Stub {
         return retVal;
     }
 
+    public void removeStaleSubPreferences(String prefKey) {
+        List<SubscriptionInfo> subInfoList = getAllSubInfoList(mContext.getOpPackageName());
+        SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(mContext);
+        for (SubscriptionInfo subInfo : subInfoList) {
+            if (subInfo.getSimSlotIndex() == -1) {
+                sp.edit().remove(prefKey + subInfo.getSubscriptionId()).commit();
+            }
+        }
+    }
+
     /**
      * Get the SIM state for the slot idx
      * @return SIM state as the ordinal of {@See IccCardConstants.State}
@@ -1734,6 +1748,34 @@ public class SubscriptionController extends ISub.Stub {
                 SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID +
                         "=" + Integer.toString(subId), null);
         Binder.restoreCallingIdentity(token);
+    }
+
+    @Override
+    public void activateSubId(int subId) {
+        loge("activateSubId: API not supported, subId = " + subId);
+    }
+
+    @Override
+    public void deactivateSubId(int subId) {
+        loge("deactivateSubId: API not supported, subId = " + subId);
+    }
+
+    @Override
+    public int setSubState(int subId, int subStatus) {
+        int result = 0;
+
+        loge("setSubState: API not supported, subId = " + subId + " subStatus = " + subStatus);
+
+        return result;
+    }
+
+    @Override
+    public int getSubState(int subId) {
+        int result = 0;
+
+        loge("getSubState: API not supported, subId = " + subId);
+
+        return result;
     }
 
     /**

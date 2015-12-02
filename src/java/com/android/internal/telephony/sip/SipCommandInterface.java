@@ -570,24 +570,6 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     }
 
     @Override
-    public void iccOpenLogicalChannel(String AID, Message response) {
-    }
-
-    @Override
-    public void iccCloseLogicalChannel(int channel, Message response) {
-    }
-
-    @Override
-    public void iccTransmitApduLogicalChannel(int channel, int cla, int instruction,
-            int p1, int p2, int p3, String data, Message response) {
-    }
-
-    @Override
-    public void iccTransmitApduBasicChannel(int cla, int instruction, int p1, int p2,
-            int p3, String data, Message response) {
-    }
-
-    @Override
     public void nvReadItem(int itemID, Message response) {
     }
 
@@ -611,7 +593,6 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     public void requestShutdown(Message result) {
     }
 
-<<<<<<< HEAD
     @Override
     public void startLceService(int reportIntervalMs, boolean pullMode, Message result) {
     }
@@ -628,7 +609,6 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     public void getModemActivityInfo(Message result) {
     }
 
-=======
     // MTK
 
     @Override
@@ -677,5 +657,4 @@ class SipCommandInterface extends BaseCommands implements CommandsInterface {
     }
 
     public boolean needsOldRilFeature(String feature) { return false; }
->>>>>>> 9c96f45... somewhat-minimal bits needed to get arale up'n'running
 }

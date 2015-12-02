@@ -35,8 +35,10 @@ import android.util.Patterns;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.SmsApplication;
 
-
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -842,6 +844,51 @@ public final class Telephony {
             public static final int RESULT_SMS_DUPLICATED = 5;
 
             /**
+             * Used internally: The sender of the SMS was blacklisted
+             * for not being listed in the contact list
+             * @hide
+             */
+            public static final int RESULT_SMS_BLACKLISTED_UNKNOWN = 6;
+
+            /**
+             * Used internally: The sender of the SMS was blacklisted
+             * for being listed in the blacklist
+             * @hide
+             */
+            public static final int RESULT_SMS_BLACKLISTED_LIST = 7;
+
+            /**
+             * Used internally: The sender of the SMS was blacklisted
+             * for matching a blacklist regex entry
+             * @hide
+             */
+            public static final int RESULT_SMS_BLACKLISTED_REGEX = 8;
+
+            /**
+             * Used internally:
+             * Broadcast Action: A new protected text-based SMS message has been received
+             * by the device. This intent will be delivered to all registered
+             * receivers who possess {@link android.Manifest.permission#RECEIVE_PROTECTED_SMS}.
+             * These apps SHOULD NOT write the message or notify the user.
+             * The intent will have the following extra values:
+             * </p>
+             *
+             * <ul>
+             *   <li><em>"pdus"</em> - An Object[] of byte[]s containing the PDUs
+             *   that make up the message.</li>
+             * </ul>
+             *
+             * <p>The extra values can be extracted using
+             * {@link #getMessagesFromIntent(Intent)}.</p>
+             *
+             * <p>If a BroadcastReceiver encounters an error while processing
+             * this intent it should set the result code appropriately.</p>
+             * @hide
+             */
+            public static final String PROTECTED_SMS_RECEIVED_ACTION =
+                    "android.provider.Telephony.ACTION_PROTECTED_SMS_RECEIVED";
+
+            /**
              * Activity action: Ask the user to change the default
              * SMS application. This will show a dialog that asks the
              * user whether they want to replace the current default
@@ -1141,6 +1188,49 @@ public final class Telephony {
                 }
                 return msgs;
             }
+
+            /**
+             * Read the normalized addresses out of PDUs
+             * @param pdus bytes for PDUs
+             * @param format the format of the message
+             * @return a list of Addresses for the PDUs
+             * @hide
+             */
+            public static List<String> getNormalizedAddressesFromPdus(byte[][] pdus,
+                    String format) {
+                int pduCount = pdus.length;
+                SmsMessage[] msgs = new SmsMessage[pduCount];
+                List<String> addresses = new ArrayList<String>();
+
+                for (int i = 0; i < pduCount; i++) {
+                    byte[] pdu = (byte[]) pdus[i];
+                    msgs[i] = SmsMessage.createFromPdu(pdu, format);
+                    String originatingAddress = msgs[i].getOriginatingAddress();
+                    if (!TextUtils.isEmpty(originatingAddress)) {
+                        String normalized = normalizeDigitsOnly(originatingAddress);
+                        addresses.add(normalized);
+                    }
+                }
+                return addresses;
+            }
+
+            private static String normalizeDigitsOnly(String number) {
+                return normalizeDigits(number, false /* strip non-digits */).toString();
+            }
+
+            private static StringBuilder normalizeDigits(String number, boolean keepNonDigits) {
+                StringBuilder normalizedDigits = new StringBuilder(number.length());
+                for (char c : number.toCharArray()) {
+                    int digit = Character.digit(c, 10);
+                    if (digit != -1) {
+                        normalizedDigits.append(digit);
+                    } else if (keepNonDigits) {
+                        normalizedDigits.append(c);
+                    }
+                }
+                return normalizedDigits;
+            }
+
         }
     }
 
@@ -2313,6 +2403,13 @@ public final class Telephony {
         }
 
         /**
+         * The column that specifies number of messages of type.
+         * @hide
+         */
+        public static final String TRANSPORT_TYPE_COUNT_COLUMN =
+                "transport_type_count";
+
+        /**
          * The column to distinguish SMS and MMS messages in query results.
          */
         public static final String TYPE_DISCRIMINATOR_COLUMN =
@@ -2753,6 +2850,30 @@ public final class Telephony {
         public static final String EDITED = "edited";
 
         /**
+         * <P>Type: INTEGER (boolean)</P>
+         * @hide
+         */
+        public static final String READ_ONLY = "read_only";
+
+        /**
+         * <P>Type: TEXT</P>
+         * @hide
+         */
+        public static final String PPP_NUMBER =  "ppp_number";
+
+        /**
+         * <P>Type: TEXT</P>
+         * @hide
+         */
+        public static final String LOCALIZED_NAME = "localized_name";
+
+        /**
+         * <P>Type: TEXT</P>
+         * @hide
+         */
+        public static final String VISIT_AREA = "visit_area";
+
+        /**
          * Following are possible values for the EDITED field
          * @hide
          */
@@ -2962,5 +3083,77 @@ public final class Telephony {
                 CMAS_URGENCY,
                 CMAS_CERTAINTY
         };
+    }
+
+    /**
+     * Contains phone numbers that are blacklisted
+     * for phone and/or message purposes.
+     * @hide
+     */
+    public static final class Blacklist implements BaseColumns {
+        /**
+         * The content:// style URL for this table
+         */
+        public static final Uri CONTENT_URI =
+
+                Uri.parse("content://blacklist");
+
+        /**
+         * The content:// style URL for filtering this table by number.
+         * When using this, make sure the number is correctly encoded
+         * when appended to the Uri.
+         */
+        public static final Uri CONTENT_FILTER_BYNUMBER_URI =
+                Uri.parse("content://blacklist/bynumber");
+
+        /**
+         * The content:// style URL for filtering this table on phone numbers
+         */
+        public static final Uri CONTENT_PHONE_URI =
+                Uri.parse("content://blacklist/phone");
+
+        /**
+         * The content:// style URL for filtering this table on message numbers
+         */
+        public static final Uri CONTENT_MESSAGE_URI =
+                Uri.parse("content://blacklist/message");
+
+
+        /**
+         * Query parameter used to match numbers by regular-expression like
+         * matching. Supported are the '*' and the '.' operators.
+         * <p>
+         * TYPE: boolean
+         */
+        public static final String REGEX_KEY = "regex";
+
+        /**
+         * The default sort order for this table
+         */
+        public static final String DEFAULT_SORT_ORDER = "number ASC";
+
+        /**
+         * The phone number as the user entered it.
+         * <P>Type: TEXT</P>
+         */
+        public static final String NUMBER = "number";
+
+        /**
+         * Whether the number contains a regular expression pattern
+         * <P>Type: BOOLEAN (read only)</P>
+         */
+        public static final String IS_REGEX = "is_regex";
+
+        /**
+         * Blacklisting mode for phone calls
+         * <P>Type: INTEGER (int)</P>
+         */
+        public static final String PHONE_MODE = "phone";
+
+        /**
+         * Blacklisting mode for messages
+         * <P>Type: INTEGER (int)</P>
+         */
+        public static final String MESSAGE_MODE = "message";
     }
 }

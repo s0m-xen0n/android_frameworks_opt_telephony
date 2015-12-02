@@ -119,8 +119,13 @@ public final class GsmCallTracker extends CallTracker {
         mCi.unregisterForOn(this);
         mCi.unregisterForNotAvailable(this);
 
-
         clearDisconnected();
+
+        for (GsmConnection gsmConnection : mConnections) {
+            if (gsmConnection != null) {
+                gsmConnection.dispose();
+            }
+        }
     }
 
     @Override
@@ -214,7 +219,7 @@ public final class GsmCallTracker extends CallTracker {
             throw new CallStateException("cannot dial in current state");
         }
 
-        mPendingMO = new GsmConnection(mPhone.getContext(), checkForTestEmergencyNumber(dialString),
+        mPendingMO = new GsmConnection(mPhone, checkForTestEmergencyNumber(dialString),
                 this, mForegroundCall);
         mHangupPendingMO = false;
 
@@ -505,7 +510,7 @@ public final class GsmCallTracker extends CallTracker {
                         return;
                     }
                 } else {
-                    mConnections[i] = new GsmConnection(mPhone.getContext(), dc, this, i);
+                    mConnections[i] = new GsmConnection(mPhone, dc, this, i);
 
                     Connection hoConnection = getHoConnection(dc);
                     if (hoConnection != null) {
@@ -570,7 +575,7 @@ public final class GsmCallTracker extends CallTracker {
                 // we were tracking. Assume dropped call and new call
 
                 mDroppedDuringPoll.add(conn);
-                mConnections[i] = new GsmConnection (mPhone.getContext(), dc, this, i);
+                mConnections[i] = new GsmConnection (mPhone, dc, this, i);
 
                 if (mConnections[i].getCall() == mRingingCall) {
                     newRinging = mConnections[i];
@@ -923,8 +928,20 @@ public final class GsmCallTracker extends CallTracker {
                 operationComplete();
             break;
 
-            case EVENT_SWITCH_RESULT:
             case EVENT_CONFERENCE_RESULT:
+                ar = (AsyncResult)msg.obj;
+                if (ar.exception != null) {
+                    mPhone.notifySuppServiceFailed(getFailedService(msg.what));
+                    List<Connection> conn = mForegroundCall.getConnections();
+                    if (conn != null) {
+                        Rlog.d(LOG_TAG, "Notify merge failure");
+                        conn.get(0).onConferenceMergeFailed();
+                    }
+                }
+                operationComplete();
+            break;
+
+            case EVENT_SWITCH_RESULT:
             case EVENT_SEPARATE_RESULT:
             case EVENT_ECT_RESULT:
                 ar = (AsyncResult)msg.obj;

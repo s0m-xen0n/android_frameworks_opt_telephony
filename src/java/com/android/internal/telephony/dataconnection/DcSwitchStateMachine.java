@@ -22,16 +22,18 @@ import com.android.internal.util.Protocol;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.internal.telephony.CommandException;
+import com.android.internal.telephony.dataconnection.DcSwitchAsyncChannel.ConnectInfo;
+import com.android.internal.telephony.dataconnection.DcSwitchAsyncChannel.RequestInfo;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneProxy;
-import com.android.internal.telephony.dataconnection.DcSwitchAsyncChannel.ConnectInfo;
-import com.android.internal.telephony.dataconnection.DcSwitchAsyncChannel.RequestInfo;
+import com.android.internal.telephony.SubscriptionController;
 
 import android.os.AsyncResult;
 import android.os.Message;
 import android.telephony.Rlog;
+import android.telephony.ServiceState;
 
 public class DcSwitchStateMachine extends StateMachine {
     private static final boolean DBG = true;
@@ -126,10 +128,24 @@ public class DcSwitchStateMachine extends StateMachine {
 
 
                 case DcSwitchAsyncChannel.EVENT_DATA_ATTACHED:
+                    SubscriptionController subController = SubscriptionController.getInstance();
+                    int ddsSubId = subController.getDefaultDataSubId();
+                    int ddsPhoneId = subController.getPhoneId(ddsSubId);
+
                     if (DBG) {
-                        log("AttachingState: EVENT_DATA_ATTACHED");
+                        log("IdleState: EVENT_DATA_ATTACHED");
                     }
-                    transitionTo(mAttachedState);
+
+                    if (ddsPhoneId == mId) {
+                        if (DBG) {
+                            log("IdleState: DDS sub reported ATTACHed in IDLE state");
+                        }
+                        /* Move to AttachingState and handle this ATTACH msg over there.
+                         * This would ensure that Modem gets a ALLOW_DATA(true)
+                         */
+                        deferMessage(msg);
+                        transitionTo(mAttachingState);
+                    }
                     retVal = HANDLED;
                     break;
 
@@ -283,6 +299,16 @@ public class DcSwitchStateMachine extends StateMachine {
                         } else {
                             logd("EVENT_DATA_ALLOWED success");
                             mResponseMsg = null;
+
+                            /* If the data service state is IN_SERVICE then move to
+                             * ATTACHED state.
+                             */
+                            int dataState = mPhone.getServiceState().getDataRegState();
+                            if (dataState == ServiceState.STATE_IN_SERVICE) {
+                                logd("AttachingState: Already attached, move to ATTACHED state");
+                                transitionTo(mAttachedState);
+                            }
+
                         }
                     }
                     retVal = HANDLED;
@@ -325,9 +351,7 @@ public class DcSwitchStateMachine extends StateMachine {
                         DctController.getInstance().releaseAllRequests(mId);
                     }
 
-                    // modem gets unhappy if we try to detach while attaching
-                    // wait til attach finishes.
-                    deferMessage(msg);
+                    transitionTo(mIdleState);
                     retVal = HANDLED;
                     break;
                 }

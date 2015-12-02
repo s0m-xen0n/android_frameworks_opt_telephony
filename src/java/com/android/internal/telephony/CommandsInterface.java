@@ -1696,6 +1696,12 @@ public interface CommandsInterface {
     public int getLteOnCdmaMode();
 
     /**
+     * Return if the current radio is LTE on GSM
+     * @hide
+     */
+    public int getLteOnGsmMode();
+
+    /**
      * Request the ISIM application on the UICC to perform the AKA
      * challenge/response algorithm for IMS authentication. The nonce string
      * and challenge response are Base64 encoded Strings.
@@ -1860,6 +1866,13 @@ public interface CommandsInterface {
             int p3, String data, Message response);
 
     /**
+     * Get ATR (Answer To Reset; as per ISO/IEC 7816-4) from SIM card
+     *
+     * @param response Callback message
+     */
+    public void getAtr(Message response);
+
+    /**
      * Read one of the NV items defined in {@link RadioNVItems} / {@code ril_nv_items.h}.
      * Used for device configuration by some CDMA operators.
      *
@@ -1914,20 +1927,15 @@ public interface CommandsInterface {
    /**
      * Sets user selected subscription at Modem.
      *
-     * @param slotId
-     *          Slot.
      * @param appIndex
      *          Application index in the card.
-     * @param subId
-     *          Indicates subscription 0 or subscription 1.
-     * @param subStatus
-     *          Activation status, 1 = activate and 0 = deactivate.
+     * @param activate
+     *          Whether to activate or deactivate the subscription
      * @param result
      *          Callback message contains the information of SUCCESS/FAILURE.
      */
     // FIXME Update the doc and consider modifying the request to make more generic.
-    public void setUiccSubscription(int slotId, int appIndex, int subId, int subStatus,
-            Message result);
+    public void setUiccSubscription(int appIndex, boolean activate, Message result);
 
     /**
      * Tells the modem if data is allowed or not.
@@ -2037,6 +2045,12 @@ public interface CommandsInterface {
      * @param lchStatus, true if call is in lch state
      */
     public void setLocalCallHold(boolean lchStatus);
+
+    /**
+     * @hide
+     * CM-specific: Ask the RIL about the presence of back-compat flags
+     */
+    public boolean needsOldRilFeature(String feature);
 
     // MTK additions
 

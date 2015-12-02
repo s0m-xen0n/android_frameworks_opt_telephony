@@ -256,6 +256,12 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
 
         setSignalStrengthDefaultValues();
 
+        // Query signal strength from the modem after service tracker is created (i.e. boot up,
+        // switching between GSM and CDMA phone), because the unsolicited signal strength
+        // information might come late or even never come. This will get the accurate signal
+        // strength information displayed on the UI.
+        mCi.getSignalStrength(obtainMessage(EVENT_GET_SIGNAL_STRENGTH));
+
         // Monitor locale change
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_LOCALE_CHANGED);
@@ -678,6 +684,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         if (subIds != null && subIds.length > 0) {
             subId = subIds[0];
         }
+        spn = maybeUpdateHDTagForSpn(showSpn, spn);
+        plmn = maybeUpdateHDTagForPlmn(showPlmn, plmn);
 
         // Update SPN_STRINGS_UPDATED_ACTION IFF any value changes
         if (mSubId != subId ||
@@ -1628,8 +1636,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         String onsl = s.getOperatorAlphaLong();
         String onss = s.getOperatorAlphaShort();
 
-        boolean equalsOnsl = onsl != null && spn.equals(onsl);
-        boolean equalsOnss = onss != null && spn.equals(onss);
+        boolean equalsOnsl = onsl != null && spn != null && !spn.isEmpty() && spn.equals(onsl);
+        boolean equalsOnss = onss != null && spn != null && !spn.isEmpty() && spn.equals(onss);
 
         return currentMccEqualsSimMcc(s) && (equalsOnsl || equalsOnss);
     }
@@ -1858,6 +1866,14 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             if (nitzSubs.length >= 9) {
                 String  tzname = nitzSubs[8].replace('!','/');
                 zone = TimeZone.getTimeZone( tzname );
+                // From luni's getTimeZone() "We never return null; on failure we return the
+                // equivalent of "GMT"." This is bad, since it'll force all invalid strings
+                // to "GMT"... and all the null-zone checks below will fail, making tzOffset
+                // irrelevant and GMT the active TZ. So tzOffset will take precedence if this
+                // results in "GMT"
+                if (TimeZone.getTimeZone("GMT").equals(zone) && tzOffset != 0) {
+                    zone = null;
+                }
             }
 
             String iso = ((TelephonyManager) mPhone.getContext().
