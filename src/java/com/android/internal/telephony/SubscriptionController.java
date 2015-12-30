@@ -1471,6 +1471,15 @@ public class SubscriptionController extends ISub.Stub {
 
                 if (id == subId) {
                     networkType1 = getUserNwMode(id);
+                    if (networkType1 == SubscriptionManager.DEFAULT_NW_MODE) {
+                        SubscriptionInfo subInfo = getActiveSubscriptionInfo(subId);
+                        // user mode is unset, prefer the default network mode but only if
+                        // the subscription is valid and available
+                        if (subInfo != null) {
+                            networkType1 = TelephonyManager.getTelephonyProperty(
+                                    "ro.telephony.default_network", subInfo.getSimSlotIndex(), -1);
+                        }
+                    }
                     phoneId1 = phoneId;
                     if (DBG) logdl("[setDefaultDataSubNetworkType] networkType1: "
                             + networkType1 + ", phoneId1: " + phoneId1);
