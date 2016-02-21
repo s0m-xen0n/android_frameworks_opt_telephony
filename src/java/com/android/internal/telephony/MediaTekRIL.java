@@ -32,6 +32,8 @@ import android.telephony.PhoneNumberUtils;
 import android.telephony.PhoneRatFamily;
 import android.telephony.Rlog;
 import android.telephony.SignalStrength;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
@@ -51,6 +53,20 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
     /* ALPS00799783: for restore previous preferred network type when set type fail */
     private int mPreviousPreferredType = -1;
+
+    /// M: C2K RILD socket name definition
+    static final String C2K_SOCKET_NAME_RIL = "rild-via";
+
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    private static final int CARD_TYPE_SIM  = 1;
+    private static final int CARD_TYPE_USIM = 2;
+    private static final int CARD_TYPE_CSIM = 4;
+    private static final int CARD_TYPE_RUIM = 8;
 
     /* M: call control part start */
     /* DTMF request will be ignored when duplicated sending */
@@ -2071,36 +2087,37 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 LocalSocket s = null;
                 LocalSocketAddress l;
 
-                if (mInstanceId == null || mInstanceId == 0 ) {
+                /// M: If SVLTE support, LTE RIL ID is a special value, force connect to rild socket
+                if (mInstanceId == null || mInstanceId == 0
+                        || mInstanceId == SubscriptionManager.LTE_DC_PHONE_ID) {
                     rilSocket = SOCKET_NAME_RIL[0];
                 } else {
-                    rilSocket = SOCKET_NAME_RIL[mInstanceId];
-                }
-
-                int currentSim;
-                if (mInstanceId == null || mInstanceId ==0) {
-                    currentSim = 0;
-                } else {
-                    currentSim = mInstanceId;
-                }
-
-                int m3GsimId = 0;
-                m3GsimId =  SystemProperties.getInt("gsm.3gswitch", 0);
-                if((m3GsimId > 0) && (m3GsimId <= 2)) {
-                    --m3GsimId;
-                } else {
-                    m3GsimId = 0;
-                }
-
-                if (m3GsimId >= 1) {
-                    if (currentSim == 0) {
-                       rilSocket = SOCKET_NAME_RIL[m3GsimId];
+                    if (SystemProperties.getInt("ro.mtk_dt_support", 0) != 1) {
+                        // dsds
+                        rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                    } else {
+                        // dsda
+                        if (SystemProperties.getInt("ro.evdo_dt_support", 0) == 1) {
+                            // c2k dsda
+                            rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                        } else if (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1) {
+                            // for C+L
+                            rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                        } else {
+                            // gsm dsda
+                            rilSocket = "rild-md2";
+                        }
                     }
-                    else if(currentSim == m3GsimId) {
-                       rilSocket = SOCKET_NAME_RIL[0];
-                    }
-                    if (RILJ_LOGD) riljLog("Capability switched, swap sockets [" + currentSim + ", " + rilSocket + "]");
                 }
+                // riljLog("rilSocket[" + mInstanceId + "] = " + rilSocket);
+
+                /* M: C2K start */
+                int phoneType = TelephonyManager.getPhoneType(mPreferredNetworkType);
+                if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
+                    rilSocket = C2K_SOCKET_NAME_RIL;
+                }
+                /* M: C2K end */
+                riljLog("rilSocket[" + mInstanceId + "] = " + rilSocket);
 
                 try {
                     s = new LocalSocket();
