@@ -127,6 +127,20 @@ public interface CommandsInterface {
     static final int OP_REMOVE                  = 3;
     static final int OP_PERMANENT_UNLOCK        = 4;
 
+    // UTK start
+    // Command Qualifier values for refresh command
+    static final int REFRESH_NAA_INIT_AND_FULL_FILE_CHANGE  = 0x00;
+    static final int REFRESH_NAA_FILE_CHANGE                = 0x01;
+    static final int REFRESH_NAA_INIT_AND_FILE_CHANGE       = 0x02;
+    static final int REFRESH_NAA_INIT                       = 0x03;
+    static final int REFRESH_UICC_RESET                     = 0x04;
+
+    // Qualifier values for UTK Refresh command
+    static final int UTK_REFRESH_SMS = 0;
+    static final int UTK_REFRESH_PHB = 1;
+    static final int UTK_REFRESH_SYS = 2;
+    //UTK end
+
     //***** Methods
     RadioState getRadioState();
 

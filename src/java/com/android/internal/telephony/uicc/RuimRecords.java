@@ -124,6 +124,34 @@ public final class RuimRecords extends IccRecords {
     private static final int EVENT_SMS_ON_RUIM = 21;
     private static final int EVENT_GET_SMS_DONE = 22;
 
+    // MTK
+    private static final int EVENT_GET_IMSI_DONE = 3;
+    private static final int EVENT_GET_IMSI_RETRY = 6;
+    private static final int EVENT_RUIM_REFRESH = 31;
+    ///M: phonebook@{
+    /*
+    private static final int EVENT_PHB_READY = 102;
+
+    static final String[] SIMRECORD_PROPERTY_RIL_PHB_READY  = {
+        "gsm.sim.ril.phbready",
+        "gsm.sim.ril.phbready.2",
+        "gsm.sim.ril.phbready.3",
+        "gsm.sim.ril.phbready.4"
+    };
+    static final String[] SIMRECORD_PROPERTY_ICCID = {
+        "ril.iccid.sim1",
+        "ril.iccid.sim2",
+        "ril.iccid.sim3",
+        "ril.iccid.sim4",
+    };
+    int mSlotId;
+    private boolean mPhbReady = false;
+    private Phone mPhone;
+    private BroadcastReceiver mSubReceiver;
+    private boolean mPhbWaitSub = false;
+    */
+    ///M: phonebook end @}
+
     // RUIM ID is 8 bytes data
     private static final int NUM_BYTES_RUIM_ID = 8;
 
@@ -138,20 +166,60 @@ public final class RuimRecords extends IccRecords {
         mRecordsToLoad = 0;
 
         // NOTE the EVENT_SMS_ON_RUIM is not registered
+        mCi.registerForIccRefresh(this, EVENT_RUIM_REFRESH, null);  // MTK
+
+        ///M: add for PhoneBook @{
+        /*
+        mCi.registerForPhbReady(this, EVENT_PHB_READY, null);
+
+        IntentFilter phbFilter = new IntentFilter();
+        phbFilter.addAction(Intent.ACTION_AIRPLANE_MODE_CHANGED);
+        phbFilter.addAction("android.intent.action.ACTION_SHUTDOWN_IPO");
+        mContext.registerReceiver(mHandlePhbReadyReceiver, phbFilter);
+        */
+        ///M: @)
 
         // Start off by setting empty state
         resetRecords();
 
         mParentApp.registerForReady(this, EVENT_APP_READY, null);
         if (DBG) log("RuimRecords X ctor this=" + this);
+
+        /*
+        /Add for support SubId
+        mSubReceiver = new SubBroadCastReceiver();
+        IntentFilter subFilter = new IntentFilter();
+        subFilter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        mContext.registerReceiver(mSubReceiver, subFilter);
+
+        ///M: ALPS01099419, mAdnCache is needed before onUpdateIccAvailability.
+        if(DBG) log("RuimRecords updateIccRecords in IccPhoneBookeInterfaceManager");
+        mPhone.getIccPhoneBookInterfaceManager().updateIccRecords(this);
+
+        ///M: ALPS01370736 Check if phb is ready or not, if phb was already ready, we won't wait for phb ready.@{
+        if(isPhbReady()) {
+            if(DBG) log("RuimRecords : Phonebook is ready.");
+
+            //The value of mPhbReady is changed in isPhbReady()
+            broadcastPhbStateChangedIntent(mPhbReady);
+        }
+        */
+        ///M: @}
     }
 
     @Override
     public void dispose() {
         if (DBG) log("Disposing RuimRecords " + this);
         //Unregister for all events
+        mCi.unregisterForIccRefresh(this);  // MTK
         mParentApp.unregisterForReady(this);
         resetRecords();
+        /*
+        mPhbWaitSub = false;
+
+        //alps01292449 when radio off, no need reset adnCache
+        mAdnCache.reset();
+        */
         super.dispose();
     }
 
@@ -806,6 +874,131 @@ public final class RuimRecords extends IccRecords {
                 // We already know if it is an OMH card in this point
                 fetchOMHCardRecords(omhEnabled);
                 break;
+
+            // MTK
+            case EVENT_GET_IMSI_RETRY:
+                log("Event EVENT_GET_IMSI_RETRY Received, to get through ril");
+                mCi.getIMSI(obtainMessage(EVENT_GET_IMSI_DONE));
+            break;
+
+            case EVENT_GET_IMSI_DONE:
+                isRecordLoadResponse = true;
+
+                ar = (AsyncResult)msg.obj;
+                if (ar.exception != null) {
+                    loge("Exception querying IMSI, Exception:" + ar.exception);
+                    break;
+                }
+
+                mImsi = (String) ar.result;
+
+                // IMSI (MCC+MNC+MSIN) is at least 6 digits, but not more
+                // than 15 (and usually 15).
+                if (mImsi != null && (mImsi.length() < 6 || mImsi.length() > 15)) {
+                    loge("invalid IMSI " + mImsi);
+                    mImsi = null;
+                }
+
+                log("IMSI: " + mImsi.substring(0, 6) + "xxxxxxxxx");
+
+                //Added by M start
+                if (mImsi != null && mImsi.equals("111111110000000")) {
+                    Rlog.d(LOG_TAG, "IMSI: " + mImsi);
+                    mImsi = null;
+                }
+                //Added by M end
+
+                String operatorNumeric = getRUIMOperatorNumeric();
+                if (operatorNumeric != null) {
+                    if (operatorNumeric.length() <= 6) {
+                        MccTable.updateMccMncConfiguration(mContext, operatorNumeric, false);
+                    }
+                }
+
+                //Added by M start
+                if (mImsi == null) {
+                    isRecordLoadResponse = false;
+                    getIMSIDelay(3000);
+                } else {
+                    //Added by M start, set cdma operator MCC value
+                   if (!mImsi.equals("") && mImsi.length() >= 3) {
+                        SystemProperties.set("cdma.icc.operator.mcc", mImsi.substring(0, 3));
+                   }
+                   //Added by M end
+                }
+                //Added by M end
+                // NOTE: we don't have mRuimImsi here in the port
+                /*
+                if (!mImsi.equals(mRuimImsi)) {
+                    mRuimImsi = mImsi;
+                    mImsiReadyRegistrants.notifyRegistrants();
+                    log("RuimRecords: mImsiReadyRegistrants.notifyRegistrants");
+                }
+                */
+            break;
+
+            case EVENT_RUIM_REFRESH:
+                isRecordLoadResponse = false;
+                ar = (AsyncResult)msg.obj;
+                if (ar.exception == null) {
+                    handleRuimRefresh((IccRefreshResponse)ar.result);
+                }
+                break;
+
+            //mtk add start
+            /*
+            case EVENT_PHB_READY:
+                if (DBG) log("handleMessage (EVENT_PHB_READY)");
+                mPhbReady = true;
+                //No need to update system property because it has been updated in rill.
+                broadcastPhbStateChangedIntent(mPhbReady);
+                break;
+            */
+            //mtk add end
+
+            // M add this for do those consuming SIM_IO operation one by one, begin
+            case EVENT_GET_ICC_RECORD_DONE:
+                ar = (AsyncResult) msg.obj;
+                IccRecordLoaded recordLoaded = (IccRecordLoaded) ar.userObj;
+                if (DBG) {
+                    log(recordLoaded.getEfName() + " LOADED");
+                }
+
+                if (ar.exception != null) {
+                    loge("Record Load Exception: " + ar.exception);
+                } else {
+                    recordLoaded.onRecordLoaded(ar);
+                }
+
+                if (recordLoaded.getEfName().equals("EF_PL")) {
+                    mFh.loadEFTransparent(EF_CSIM_LI,
+                        obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimLiLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_LI")) {
+                    mFh.loadEFTransparent(EF_CSIM_SPN,
+                        obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimSpnLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_SPN")) {
+                    mFh.loadEFLinearFixed(EF_CSIM_MDN, 1,
+                            obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimMdnLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_MDN")) {
+                    mFh.loadEFTransparent(EF_CSIM_IMSIM,
+                            obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimImsimLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_IMSIM")) {
+                    mFh.loadEFLinearFixedAll(EF_CSIM_CDMAHOME,
+                            obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimCdmaHomeLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_CDMAHOME")) {
+                    mFh.loadEFTransparent(EF_CSIM_EPRL, 4,
+                            obtainMessage(EVENT_GET_ICC_RECORD_DONE, new EfCsimEprlLoaded()));
+                    mRecordsToLoad++;
+                } else if (recordLoaded.getEfName().equals("EF_CSIM_EPRL")) {
+                }
+                break;
+            // M add this for do those consuming SIM_IO operation one by one, end
+
             default:
                 super.handleMessage(msg);   // IccRecords handles generic record load responses
 
@@ -979,6 +1172,13 @@ public final class RuimRecords extends IccRecords {
         // trigger to retrieve all records
         fetchRuimRecords();
     }
+
+//Added by M start
+    private void getIMSIDelay(long delayMillis) {
+        Rlog.d(LOG_TAG, "to getIMSIDelay, delayMillis = " + delayMillis);
+        sendEmptyMessageDelayed(EVENT_GET_IMSI_RETRY, delayMillis);
+    }
+//Added by M end
 
     private void fetchRuimRecords() {
         boolean mESNTrackerEnabled = mContext.getResources().getBoolean(
@@ -1287,4 +1487,73 @@ public final class RuimRecords extends IccRecords {
         pw.println(" mHomeNetworkId=" + mHomeNetworkId);
         pw.flush();
     }
+
+    // MTK
+    public String getRUIMOperatorNumeric() {
+        // seems only a duplicate of getOperatorNumeric()
+        return getOperatorNumeric();
+    }
+
+    // UTK start
+    private void handleRuimRefresh(IccRefreshResponse refreshResponse) {
+        if (refreshResponse == null) {
+            if (DBG) log("handleRuimRefresh received without input");
+            return;
+        }
+
+        if (DBG) log("handleRuimRefresh process ruim refresh");
+
+        /*
+        if (refreshResponse.aid != null &&
+                !refreshResponse.aid.equals(mParentApp.getAid())) {
+            // This is for different app. Ignore.
+            return;
+        }
+
+        switch (refreshResponse.refreshResult) {
+            case IccRefreshResponse.REFRESH_RESULT_FILE_UPDATE:
+                if (DBG) log("handleRuimRefresh with SIM_REFRESH_FILE_UPDATED");
+                adnCache.reset();
+                fetchRuimRecords();
+                break;
+            case IccRefreshResponse.REFRESH_RESULT_INIT:
+                if (DBG) log("handleRuimRefresh with SIM_REFRESH_INIT");
+                // need to reload all files (that we care about)
+                fetchRuimRecords();
+                break;
+            case IccRefreshResponse.REFRESH_RESULT_RESET:
+                if (DBG) log("handleRuimRefresh with SIM_REFRESH_RESET");
+                mCi.setRadioPower(false, null);
+                // Note: no need to call setRadioPower(true).  Assuming the desired
+                // radio power state is still ON (as tracked by ServiceStateTracker),
+                // ServiceStateTracker will call setRadioPower when it receives the
+                // RADIO_STATE_CHANGED notification for the power off.  And if the
+                // desired power state has changed in the interim, we don't want to
+                // override it with an unconditional power on.
+                //
+                break;
+            default:
+                // unknown refresh operation
+                if (DBG) log("handleRuimRefresh with unknown operation");
+                break;
+        }
+        */
+
+        switch (refreshResponse.refreshResult) {
+            case CommandsInterface.REFRESH_NAA_INIT_AND_FULL_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_INIT_AND_FILE_CHANGE:
+            case CommandsInterface.REFRESH_NAA_INIT:
+                log("Refresh with NAA file change");
+                mAdnCache.reset();
+                break;
+            case CommandsInterface.REFRESH_UICC_RESET:
+                log("Refresh with UICC reset 0x04");
+                break;
+            default:
+                log("Refresh with unknown operation");
+                break;
+        }
+    }
+    //UTK end
 }
