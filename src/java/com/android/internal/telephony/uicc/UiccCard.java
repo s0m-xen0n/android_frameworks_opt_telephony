@@ -32,6 +32,7 @@ import android.os.Message;
 import android.os.PowerManager;
 import android.os.Registrant;
 import android.os.RegistrantList;
+import android.os.UserHandle;
 import android.preference.PreferenceManager;
 import android.telephony.Rlog;
 import android.telephony.TelephonyManager;
@@ -42,6 +43,7 @@ import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.CommandsInterface.RadioState;
 import com.android.internal.telephony.IccCardConstants.State;
+import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.gsm.GSMPhone;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.telephony.uicc.IccCardStatus.CardState;
@@ -51,6 +53,8 @@ import com.android.internal.telephony.cat.CatServiceFactory;
 import com.android.internal.telephony.cdma.CDMALTEPhone;
 import com.android.internal.telephony.cdma.CDMAPhone;
 import com.android.internal.telephony.cdma.CdmaSubscriptionSourceManager;
+
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
 
 import android.os.SystemProperties;
 
@@ -101,6 +105,7 @@ public class UiccCard {
     // MTK
     private static final int EVENT_GET_ATR_DONE = 100;
     private static final int EVENT_OPEN_CHANNEL_WITH_SW_DONE = 101;
+    private static final int EVENT_CDMA_CARD_IMSI_DONE = 102;
 
     private int mPhoneId;
 
@@ -111,6 +116,24 @@ public class UiccCard {
         "gsm.ril.uicctype.3",
         "gsm.ril.uicctype.4",
     };
+
+    private String mIccType = null; /* Add for USIM detect */
+    private CommandsInterface mSvlteCi;/* Add for C2K SVLTE */
+    private boolean mIsSvlte = false;
+    // XXX: mmm... this is outright duplication (from MediaTekRIL)...
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+
+    private IccRecords mUsimRecords = null;
+    private IccRecords mCsimRecords = null;
+    private String mCdmaCsimImsi = null;
+    private String mCdmaUsimImsi = null;
+    private boolean mCsimRigisterDone = false;
+    private boolean mUsimRigisterDone = false;
 
     public UiccCard(Context c, CommandsInterface ci, IccCardStatus ics, int phoneId) {
         mCardState = ics.mCardState;
@@ -138,6 +161,11 @@ public class UiccCard {
     }
 
     public void update(Context c, CommandsInterface ci, IccCardStatus ics) {
+        // noticed serious duplication, so made the method a wrapper.
+        update(c, ci, ics, true);
+    }
+
+    public void update(Context c, CommandsInterface ci, IccCardStatus ics, boolean isUpdateSimInfo) {
         synchronized (mLock) {
             if (mDestroyed) {
                 loge("Updated after destroyed! Fix me!");
@@ -151,24 +179,84 @@ public class UiccCard {
             mImsSubscriptionAppIndex = ics.mImsSubscriptionAppIndex;
             mContext = c;
             mCi = ci;
+
+            // MTK
+            // check the UiccCard type.
+            int TargetIndex = -1;
+			log("update mIsSvlte=" + mIsSvlte);
+            if (mIsSvlte) {
+                IccCardApplicationStatus.AppType appType =
+                        IccCardApplicationStatus.AppType.APPTYPE_UNKNOWN;
+                for (int i = 0; i < ics.mApplications.length; i++) {
+                    if (ics.mApplications[i] != null &&
+                            (ics.mApplications[i].app_type ==
+                                 IccCardApplicationStatus.AppType.APPTYPE_CSIM ||
+                             ics.mApplications[i].app_type ==
+                                 IccCardApplicationStatus.AppType.APPTYPE_RUIM ||
+                             ics.mApplications[i].app_type ==
+                                 IccCardApplicationStatus.AppType.APPTYPE_SIM ||
+                             ics.mApplications[i].app_type ==
+                                 IccCardApplicationStatus.AppType.APPTYPE_USIM)) {
+                        appType = ics.mApplications[i].app_type;
+                        break;
+                    }
+				}
+				log("update appType=" + appType);
+                if (appType == IccCardApplicationStatus.AppType.APPTYPE_CSIM ||
+                    appType == IccCardApplicationStatus.AppType.APPTYPE_RUIM) {
+                    mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
+                    TargetIndex = mCdmaSubscriptionAppIndex;
+                } else if (appType == IccCardApplicationStatus.AppType.APPTYPE_SIM
+                        || appType == IccCardApplicationStatus.AppType.APPTYPE_USIM) {
+                    mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
+                    TargetIndex = mGsmUmtsSubscriptionAppIndex;
+                } else {
+                    loge("update, but appType: " + appType);
+                }
+            } else {
+                mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
+                mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
+            }
+
+			log("update TargetIndex=" + TargetIndex +
+				    "  mGsmUmtsSubscriptionAppIndex=" + mGsmUmtsSubscriptionAppIndex +
+				    "  mCdmaSubscriptionAppIndex=" + mCdmaSubscriptionAppIndex +
+				    "  mUiccApplications.length=" + mUiccApplications.length);
+
             //update applications
             if (mUICCConfig == null)
                 mUICCConfig = new UICCConfig();
             if (DBG) log(ics.mApplications.length + " applications");
             for ( int i = 0; i < mUiccApplications.length; i++) {
+                if (TargetIndex != i && TargetIndex >= 0) {
+                    continue;
+                }
+                log("mUiccApplications[" + i + "]=" + mUiccApplications[i]);
                 if (mUiccApplications[i] == null) {
                     //Create newly added Applications
                     if (i < ics.mApplications.length) {
-                        mUiccApplications[i] = new UiccCardApplication(this,
-                                ics.mApplications[i], mContext, mCi);
+                        if (mIsSvlte && TargetIndex == mGsmUmtsSubscriptionAppIndex) {
+							mUiccApplications[i] = new UiccCardApplication(this,
+                                    ics.mApplications[i], mContext, mSvlteCi);
+						} else {
+						    mUiccApplications[i] = new UiccCardApplication(this,
+                                    ics.mApplications[i], mContext, mCi);
+						}
+						log("new mUiccApplications[" + i + "]");
                     }
                 } else if (i >= ics.mApplications.length) {
                     //Delete removed applications
                     mUiccApplications[i].dispose();
                     mUiccApplications[i] = null;
+                    log("dispose mUiccApplications[" + i + "]");
                 } else {
                     //Update the rest
-                    mUiccApplications[i].update(ics.mApplications[i], mContext, mCi);
+                    if (mIsSvlte && TargetIndex == mGsmUmtsSubscriptionAppIndex) {
+						mUiccApplications[i].update(ics.mApplications[i], mContext, mSvlteCi);
+					} else {
+					    mUiccApplications[i].update(ics.mApplications[i], mContext, mCi);
+					}
+					log("update mUiccApplications[" + i + "]");
                 }
             }
 
@@ -189,16 +277,19 @@ public class UiccCard {
             if (DBG) log("update: radioState=" + radioState + " mLastRadioState="
                     + mLastRadioState);
             // No notifications while radio is off or we just powering up
-            if (radioState == RadioState.RADIO_ON && mLastRadioState == RadioState.RADIO_ON) {
-                if (oldState != CardState.CARDSTATE_ABSENT &&
-                        mCardState == CardState.CARDSTATE_ABSENT) {
-                    if (DBG) log("update: notify card removed");
-                    mAbsentRegistrants.notifyRegistrants();
-                    mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_REMOVED, null));
-                } else if (oldState == CardState.CARDSTATE_ABSENT &&
-                        mCardState != CardState.CARDSTATE_ABSENT) {
-                    if (DBG) log("update: notify card added");
-                    mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_ADDED, null));
+            // MTK: added isUpdateSimInfo
+            if (isUpdateSimInfo) {
+                if (radioState == RadioState.RADIO_ON && mLastRadioState == RadioState.RADIO_ON) {
+                    if (oldState != CardState.CARDSTATE_ABSENT &&
+                            mCardState == CardState.CARDSTATE_ABSENT) {
+                        if (DBG) log("update: notify card removed");
+                        mAbsentRegistrants.notifyRegistrants();
+                        mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_REMOVED, null));
+                    } else if (oldState == CardState.CARDSTATE_ABSENT &&
+                            mCardState != CardState.CARDSTATE_ABSENT) {
+                        if (DBG) log("update: notify card added");
+                        mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_ADDED, null));
+                    }
                 }
             }
             mLastRadioState = radioState;
@@ -396,6 +487,31 @@ public class UiccCard {
                     break;
                 case EVENT_CARRIER_PRIVILIGES_LOADED:
                     onCarrierPriviligesLoadedMessage();
+                    break;
+                // MTK
+                case EVENT_CDMA_CARD_IMSI_DONE:
+                    log("Handler EVENT_CDMA_CARD_IMSI_DONE mIsSvlte=" + mIsSvlte);
+                    if (mIsSvlte) {
+                        if (mGsmUmtsSubscriptionAppIndex >= 0
+                            && mUiccApplications[mGsmUmtsSubscriptionAppIndex] != null
+                            && mCdmaSubscriptionAppIndex >= 0
+                            && mUiccApplications[mCdmaSubscriptionAppIndex] != null) {
+                            mCsimRecords =
+                                mUiccApplications[mCdmaSubscriptionAppIndex].getIccRecords();
+                            mUsimRecords =
+                                mUiccApplications[mGsmUmtsSubscriptionAppIndex].getIccRecords();
+                            if ((mUsimRecords != null) || (mCsimRecords != null)) {
+                                if ((mUsimRecords.getIMSI() != null)
+                                    && (mUsimRecords.getIMSI() != mCdmaUsimImsi)
+                                    && (mCsimRecords.getIMSI() != null)
+                                    && (mCsimRecords.getIMSI() != mCdmaCsimImsi)) {
+                                    mCdmaUsimImsi = mUsimRecords.getIMSI();
+                                    mCdmaCsimImsi = mCsimRecords.getIMSI();
+                                    broadcastCdmaCardImsiIntent();
+                                }
+                            }
+                        }
+                    }
                     break;
                 default:
                     loge("Unknown Event " + msg.what);
@@ -751,66 +867,128 @@ public class UiccCard {
         return mIccType;
     }
 
+    public String[] getFullIccCardType() {
+        return SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[mPhoneId]).split(",");
+    }
+
     public void iccOpenChannelWithSw(String AID, Message onComplete) {
         mCi.iccOpenChannelWithSw(AID,
             mHandler.obtainMessage(EVENT_OPEN_CHANNEL_WITH_SW_DONE, onComplete));
     }
 
-    public void update(Context c, CommandsInterface ci, IccCardStatus ics, boolean isUpdateSimInfo) {
-        synchronized (mLock) {
-            if (mDestroyed) {
-                loge("Updated after destroyed! Fix me!");
-                return;
-            }
-            CardState oldState = mCardState;
-            mCardState = ics.mCardState;
-            mUniversalPinState = ics.mUniversalPinState;
-            mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
-            mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
-            mImsSubscriptionAppIndex = ics.mImsSubscriptionAppIndex;
-            mContext = c;
-            mCi = ci;
-            //update applications
-            if (DBG) log(ics.mApplications.length + " applications");
-            for (int i = 0; i < mUiccApplications.length; i++) {
-                if (mUiccApplications[i] == null) {
-                    //Create newly added Applications
-                    if (i < ics.mApplications.length) {
-                        mUiccApplications[i] = new UiccCardApplication(this,
-                                ics.mApplications[i], mContext, mCi);
-                    }
-                } else if (i >= ics.mApplications.length) {
-                    //Delete removed applications
-                    mUiccApplications[i].dispose();
-                    mUiccApplications[i] = null;
-                } else {
-                    //Update the rest
-                    mUiccApplications[i].update(ics.mApplications[i], mContext, mCi);
-                }
-            }
-
-            createAndUpdateCatService();
-            sanitizeApplicationIndexes();
-
-            RadioState radioState = mCi.getRadioState();
-            if (DBG) log("update: radioState=" + radioState + " mLastRadioState="
-                    + mLastRadioState + "isUpdateSimInfo= " + isUpdateSimInfo);
-            // No notifications while radio is off or we just powering up
-            if (isUpdateSimInfo) {
-                if (radioState == RadioState.RADIO_ON && mLastRadioState == RadioState.RADIO_ON) {
-                    if (oldState != CardState.CARDSTATE_ABSENT &&
-                            mCardState == CardState.CARDSTATE_ABSENT) {
-                        if (DBG) log("update: notify card removed");
-                        mAbsentRegistrants.notifyRegistrants();
-                        mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_REMOVED, null));
-                    } else if (oldState == CardState.CARDSTATE_ABSENT &&
-                            mCardState != CardState.CARDSTATE_ABSENT) {
-                        if (DBG) log("update: notify card added");
-                        mHandler.sendMessage(mHandler.obtainMessage(EVENT_CARD_ADDED, null));
-                    }
-                }
-            }
-            mLastRadioState = radioState;
+    //For C2K SVLTE
+    public UiccCard(Context c, CommandsInterface ci, IccCardStatus ics, int slotId, CommandsInterface svlteCi) {
+        if (DBG) log("Creating simId " + slotId + ",svlteCi" + svlteCi);
+        if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+            mIsSvlte = true;
+			mSvlteCi = svlteCi;
         }
+        mCardState = ics.mCardState;
+        mPhoneId = slotId;
+        update(c, ci, ics);
+    }
+
+    public void setSvlteFlag(boolean isSvlte) {
+        if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+            mIsSvlte = isSvlte;
+        } else {
+            log("setSvlteFlag Error");
+        }
+        log("setSvlteFlag mIsSvlte:" + mIsSvlte);
+    }
+
+    //Update LTE UiccApplication
+    /*public void update(Context c, CommandsInterface ci, IccCardStatus ics, CommandsInterface svlteCi) {
+        log("update svlteCi");
+        mSvlteCi = svlteCi;
+		update(c, ci, ics);
+    }*/
+
+	private void configModemRemoteSimAccess() {
+		String cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+		Rlog.d(LOG_TAG, "configModemRemoteSimAccess cardType=" + cardType);
+		String appType[] = cardType.split(",");
+		int type = 0;
+		for (int i = 0; i < appType.length; i++) {
+			if ("USIM".equals(appType[i]) || "SIM".equals(appType[i])) {
+				Rlog.d(LOG_TAG, "UiccCard cardType: contain USIM/SIM");
+				type |= 0x01;
+				continue;
+			} else if ("CSIM".equals(appType[i]) || "RUIM".equals(appType[i])) {
+			    Rlog.d(LOG_TAG, "UiccCard cardType: contain CSIM/RUIM");
+				type |= 0x02;
+				continue;
+			}
+		}
+		switch (type) {
+            case 0:
+				// no card
+                mCi.configModemStatus(2, 1, null);
+				if (mSvlteCi != null) {
+					mSvlteCi.configModemStatus(2, 1, null);
+				}
+                break;
+            case 1:
+				// GSM only card
+                mCi.configModemStatus(2, 1, null);
+				if (mSvlteCi != null) {
+					mSvlteCi.configModemStatus(2, 1, null);
+				}
+                break;
+            case 2:
+				// UIM only card
+                mCi.configModemStatus(1, 1, null);
+				if (mSvlteCi != null) {
+					mSvlteCi.configModemStatus(1, 1, null);
+				}
+                break;
+			case 3:
+				// LTE card
+                mCi.configModemStatus(2, 1, null);
+				if (mSvlteCi != null) {
+					mSvlteCi.configModemStatus(2, 1, null);
+				}
+                break;
+            }
+	}
+
+    /**
+    * This funtion is to register for card imsi done.
+    * @param index int uicc card index
+    */
+    public void registerCdmaCardImsiDone(int index) {
+        log("registerCdmaCardImsiDone: index =" + index
+            + " mCdmaSubscriptionAppIndex=" + mCdmaSubscriptionAppIndex
+            + " mGsmUmtsSubscriptionAppIndex=" + mGsmUmtsSubscriptionAppIndex);
+        if ((!mCsimRigisterDone) && (index != UiccController.INDEX_SVLTE)) {
+            if (mCdmaSubscriptionAppIndex >= 0
+                && mUiccApplications[mCdmaSubscriptionAppIndex] != null) {
+                mCsimRecords = mUiccApplications[mCdmaSubscriptionAppIndex].getIccRecords();
+                if (mCsimRecords != null) {
+                    mCsimRecords.registerForImsiReady(mHandler, EVENT_CDMA_CARD_IMSI_DONE, null);
+                    mCsimRigisterDone = true;
+                    log("registerCdmaCardImsiDone: index != UiccController.INDEX_SVLTE");
+                }
+            }
+        } else if ((!mUsimRigisterDone) && (index == UiccController.INDEX_SVLTE)) {
+            if (mGsmUmtsSubscriptionAppIndex >= 0
+                && mUiccApplications[mGsmUmtsSubscriptionAppIndex] != null) {
+                mUsimRecords = mUiccApplications[mGsmUmtsSubscriptionAppIndex].getIccRecords();
+                if (mUsimRecords != null) {
+                    mUsimRecords.registerForImsiReady(mHandler, EVENT_CDMA_CARD_IMSI_DONE, null);
+                    mUsimRigisterDone = true;
+                    log("registerCdmaCardImsiDone: index == UiccController.INDEX_SVLTE");
+                }
+            }
+        }
+    }
+
+    private void broadcastCdmaCardImsiIntent() {
+        Intent intent = new Intent(TelephonyIntents.ACTION_CDMA_CARD_IMSI);
+        intent.putExtra(TelephonyIntents.INTENT_KEY_CDMA_CARD_CSIM_IMSI, mCdmaCsimImsi);
+        intent.putExtra(TelephonyIntents.INTENT_KEY_CDMA_CARD_USIM_IMSI, mCdmaUsimImsi);
+        log("Broadcasting intent broadcastCdmaCardImsiIntent mCdmaCsimImsi=" + mCdmaCsimImsi
+            + " mCdmaUsimImsi=" + mCdmaUsimImsi);
+        ActivityManagerNative.broadcastStickyIntent(intent, READ_PHONE_STATE, UserHandle.USER_ALL);
     }
 }

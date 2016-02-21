@@ -16,7 +16,9 @@
 
 package com.android.internal.telephony.uicc;
 
+import android.app.ActivityManagerNative;
 import android.content.Context;
+import static android.Manifest.permission.READ_PHONE_STATE;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.BroadcastReceiver;
@@ -29,6 +31,7 @@ import android.os.Message;
 import android.os.Registrant;
 import android.os.RegistrantList;
 import android.os.SystemProperties;
+import android.os.UserHandle;
 import android.telephony.TelephonyManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.Rlog;
@@ -43,6 +46,8 @@ import com.android.internal.telephony.IccCardConstants;
 import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.PersoSubState;
+
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -123,6 +128,7 @@ public class UiccController extends Handler {
     protected static final int EVENT_INVALID_SIM_DETECTED = 114;
     protected static final int EVENT_REPOLL_SML_STATE = 115;
     protected static final int EVENT_COMMON_SLOT_NO_CHANGED = 116;
+    protected static final int EVENT_CDMA_CARD_TYPE = 117;
 
     //Multi-application
     protected static final int EVENT_TURN_ON_ISIM_APPLICATION_DONE = 200;
@@ -150,6 +156,23 @@ public class UiccController extends Handler {
     // MTK
     private boolean mIsHotSwap = false;
     private boolean mClearMsisdn = false;
+    private IccCardConstants.CardType mCdmaCardType = IccCardConstants.CardType.UNKNOW_CARD;
+
+    //C2K SVLTE
+    private CommandsInterface mSvlteCi;
+    public static final int INDEX_SVLTE = 100;
+    private int mSvlteIndex = -1;
+    private int mNotifyIccCount = 0;
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    private static final int CARD_TYPE_SIM  = 1;
+    private static final int CARD_TYPE_USIM = 2;
+    private static final int CARD_TYPE_CSIM = 4;
+    private static final int CARD_TYPE_RUIM = 8;
 
     private RegistrantList mRecoveryRegistrants = new RegistrantList();
     //Multi-application
@@ -200,6 +223,10 @@ public class UiccController extends Handler {
             mCis[i].registerForSimPlugIn(this, EVENT_SIM_PLUG_IN, index);
             mCis[i].registerForCommonSlotNoChanged(this, EVENT_COMMON_SLOT_NO_CHANGED, index);
             mCis[i].registerForSessionChanged(this, EVENT_APPLICATION_SESSION_CHANGED, index);
+            if (FeatureOptionUtils.isCdmaLteDcSupport()
+                && (i == FeatureOptionUtils.getExternalModemSlot())) {
+                mCis[i].registerForCdmaCardType(this, EVENT_CDMA_CARD_TYPE, index);
+            }
 
             if (mOEMHookSimRefresh) {
                 mCis[i].registerForSimRefreshEvent(this, EVENT_REFRESH_OEM, index);
@@ -329,14 +356,33 @@ public class UiccController extends Handler {
             Integer index = getCiIndex(msg);
 
             if (index < 0 || index >= mCis.length) {
-                Rlog.e(LOG_TAG, "Invalid index : " + index + " received with event " + msg.what);
-                return;
+                if (indexValidForSvlte(index)) {
+                    if (DBG) log("SVLTE index");
+                } else {
+                    Rlog.e(LOG_TAG, "Invalid index : " + index + " received with event " + msg.what);
+                    return;
+                }
             }
 
             switch (msg.what) {
                 case EVENT_ICC_STATUS_CHANGED:
-                    if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus");
-                    mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE, index));
+                    if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus, index: " + index);
+                    if (FeatureOptionUtils.isCdmaLteDcSupport() && index == INDEX_SVLTE) {
+                        int full_type = getFullCardType();
+                        updateNotifyIccCount();
+                        if (full_type == 0 || (full_type & CARD_TYPE_SIM) != 0 || (full_type & CARD_TYPE_USIM) != 0) {
+                            if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus via GSM");
+                            mSvlteCi.getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE, index));
+                        }
+                        /*
+                        if (mSvlteIndex != -1 &&
+                            ((full_type & CARD_TYPE_CSIM) != 0 || (full_type & CARD_TYPE_RUIM) != 0)) {
+                            if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus via CDMA");
+                            mCis[mSvlteIndex].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE, mSvlteIndex));
+                        }*/
+                    } else {
+                        mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE, index));
+                    }
                     break;
                 case EVENT_GET_ICC_STATUS_DONE:
                     if (DBG) log("Received EVENT_GET_ICC_STATUS_DONE");
@@ -350,6 +396,9 @@ public class UiccController extends Handler {
 
                     //Update Uicc Card status.
                     onGetIccCardStatusDone(ar, index, false);
+                    if (FeatureOptionUtils.isCdmaLteDcSupport() && index == INDEX_SVLTE) {
+                        index = mSvlteIndex;
+                    }
 
                     // If we still in Network lock, broadcast intent if caller need this intent.
                     if (mUiccCards[index] != null && needIntent == true) {
@@ -467,6 +516,19 @@ public class UiccController extends Handler {
                     log("Broadcasting intent ACTION_COMMON_SLOT_NO_CHANGED for mSlotId : " + slotId);
                     mContext.sendBroadcast(intentNoChanged);
                     break;
+                case EVENT_CDMA_CARD_TYPE:
+                    if (DBG) {
+                        log("handleMessgage (EVENT_CDMA_CARD_TYPE)");
+                    }
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception == null) {
+                        int[] resultType = (int[]) ar.result;
+                        if (resultType != null) {
+                            mCdmaCardType = getCardTypeFromInt(resultType[0]);
+                            broadcastCdmaCardTypeIntent();
+                        }
+                    }
+                    break;
                 case EVENT_REFRESH:
                     ar = (AsyncResult)msg.obj;
                     if (DBG) log("Sim REFRESH received");
@@ -581,12 +643,41 @@ public class UiccController extends Handler {
 
         IccCardStatus status = (IccCardStatus)ar.result;
 
-        if (mUiccCards[index] == null) {
-            //Create new card
-            mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index);
+        if (index == INDEX_SVLTE) {
+            // SVLTE PS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE PS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status, mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE PS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+                mUiccCards[mSvlteIndex].registerCdmaCardImsiDone(index);
+            }
+        } else if (index == mSvlteIndex) {
+            //SVLTE CS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE CS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status, mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE CS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+                mUiccCards[mSvlteIndex].registerCdmaCardImsiDone(index);
+            }
         } else {
-            //Update already existing card
-            mUiccCards[index].update(mContext, mCis[index] , status);
+            // common flow
+            if (mUiccCards[index] == null) {
+                //Create new card
+                mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index);
+            } else {
+                //Update already existing card
+                mUiccCards[index].update(mContext, mCis[index] , status);
+            }
         }
 
         if (DBG) log("Notifying IccChangedRegistrants");
@@ -595,7 +686,8 @@ public class UiccController extends Handler {
     }
 
     private boolean isValidCardIndex(int index) {
-        return (index >= 0 && index < mUiccCards.length);
+        return (index >= 0 && index < mUiccCards.length)
+            || (index==INDEX_SVLTE && FeatureOptionUtils.isCdmaLteDcSupport());
     }
 
     private void log(String string) {
@@ -659,9 +751,36 @@ public class UiccController extends Handler {
         //    disableSimMissingNotification(index);
         //}
 
-        if (mUiccCards[index] == null) {
-            //Create new card
-            mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index, isUpdate);
+        if (index == INDEX_SVLTE) {
+            // SVLTE PS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE PS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status, mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE PS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+            }
+        } else if (index == mSvlteIndex) {
+            //SVLTE CS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE CS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status, mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE CS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+            }
+        } else {
+            // common flow
+            if (mUiccCards[index] == null) {
+                //Create new card
+                log("new UiccApplication index=" + index);
+                mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index);
 
 /*
             // Update the UiccCard in base class, so that if someone calls
@@ -670,9 +789,11 @@ public class UiccController extends Handler {
                 mUiccCard = mUiccCards[index];
             }
 */
-        } else {
-            //Update already existing card
-            mUiccCards[index].update(mContext, mCis[index] , status, isUpdate);
+            } else {
+                //Update already existing card
+                log("update UiccApplication index=" + index);
+                mUiccCards[index].update(mContext, mCis[index] , status, isUpdate);
+            }
         }
 
         if (DBG) log("Notifying IccChangedRegistrants");
@@ -854,6 +975,148 @@ public class UiccController extends Handler {
     public void unregisterForApplicationChanged(Handler h) {
         synchronized (mLock) {
             mApplicationChangedRegistrants.remove(h);
+        }
+    }
+
+    //C2K SVLTE
+    public void setSvlteCi(CommandsInterface ci) {
+        if (DBG) log("init SVLTE UiccController!");
+        mSvlteCi = ci;
+        mSvlteCi.registerForIccStatusChanged(this, EVENT_ICC_STATUS_CHANGED, INDEX_SVLTE);
+        mSvlteCi.registerForAvailable(this, EVENT_ICC_STATUS_CHANGED, INDEX_SVLTE);
+        mSvlteCi.registerForSimPlugOut(this, EVENT_SIM_PLUG_OUT, INDEX_SVLTE);
+        mSvlteCi.registerForSimPlugIn(this, EVENT_SIM_PLUG_IN, INDEX_SVLTE);
+    }
+
+    public void setSvlteIndex(int index) {
+        if (index < 0 || index >= mCis.length) {
+            log("setSvlteIndex invalid index:" + index);
+            return;
+        }
+        mSvlteIndex = index;
+    }
+
+    private boolean indexValidForSvlte(int index) {
+        return (index==INDEX_SVLTE && FeatureOptionUtils.isCdmaLteDcSupport());
+    }
+
+    private IccCardConstants.CardType getCardTypeFromInt(int cardTypeInt) {
+        IccCardConstants.CardType cardType;
+        switch (cardTypeInt) {
+            case 1: cardType = IccCardConstants.CardType.UIM_CARD; break;
+            case 2: cardType = IccCardConstants.CardType.SIM_CARD; break;
+            case 3: cardType = IccCardConstants.CardType.UIM_SIM_CARD; break;
+            case 4: cardType = IccCardConstants.CardType.UNKNOW_CARD; break;
+            case 5: cardType = IccCardConstants.CardType.CT_UIM_CARD; break;
+            case 6: cardType = IccCardConstants.CardType.CT_UIM_SIM_CARD; break;
+            case 7: cardType = IccCardConstants.CardType.PIN_LOCK_CARD; break;
+            case 8: cardType = IccCardConstants.CardType.CT_4G_UICC_CARD; break;
+            case 9: cardType = IccCardConstants.CardType.NOT_CDMA_UICC_CARD; break;
+            default:
+                cardType = IccCardConstants.CardType.UNKNOW_CARD;
+        }
+        if (DBG) {
+            log("getCardTypeFromInt cardTypeInt=" + cardTypeInt + " cardType=" + cardType);
+        }
+        return cardType;
+    }
+
+    /**
+      * Get card type.
+      * @return IccCardConstants CardType
+      */
+    public IccCardConstants.CardType getCardType() {
+        if (DBG) {
+            log("getCardType mCdmaCardType=" + mCdmaCardType);
+        }
+        return mCdmaCardType;
+    }
+
+    private void broadcastCdmaCardTypeIntent() {
+        Intent intent = new Intent(TelephonyIntents.ACTION_CDMA_CARD_TYPE);
+        intent.putExtra(TelephonyIntents.INTENT_KEY_CDMA_CARD_TYPE, mCdmaCardType);
+        if (DBG) {
+            log("Broadcasting intent ACTION_CDMA_CARD_TYPE cardType=" + mCdmaCardType);
+        }
+        ActivityManagerNative.broadcastStickyIntent(intent, READ_PHONE_STATE, UserHandle.USER_ALL);
+    }
+
+    private int getFullCardType() {
+        String cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+        Rlog.d(LOG_TAG, "getFullCardType=" + cardType);
+        String appType[] = cardType.split(",");
+        int fullType = 0;
+        for (int i = 0; i < appType.length; i++) {
+            if ("USIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_USIM;
+            } else if ("SIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_SIM;
+            } else if ("CSIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_CSIM;
+            } else if ("RUIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_RUIM;
+            }
+        }
+        Rlog.d(LOG_TAG, "fullType=" + fullType);
+        return fullType;
+    }
+
+    private void updateNotifyIccCount() {
+        int fullType = getFullCardType();
+
+        if ((fullType & CARD_TYPE_RUIM) == CARD_TYPE_RUIM || (fullType & CARD_TYPE_CSIM) == CARD_TYPE_CSIM &&
+                (fullType & CARD_TYPE_SIM) == CARD_TYPE_SIM || (fullType & CARD_TYPE_USIM) == CARD_TYPE_USIM) {
+            mNotifyIccCount = 2;
+        } else {
+            mNotifyIccCount = 1;
+        }
+    }
+
+    private void configModemRemoteSimAccess() {
+        int fullType = getFullCardType();
+
+        if (fullType == 0) {
+            // no card
+            Rlog.d(LOG_TAG, "SIM hot plug configModemStatus: no card");
+            for (int i = 0; i < mCis.length; i++) {
+                mCis[i].configModemStatus(1, 1, null);
+            }
+            if (mSvlteCi != null) {
+                mSvlteCi.configModemStatus(1, 1, null);
+            }
+        } else if ((fullType & CARD_TYPE_RUIM) == 0 && (fullType & CARD_TYPE_CSIM) == 0) {
+            // GSM only
+            Rlog.d(LOG_TAG, "SIM hot plug configModemStatus: GSM only");
+            for (int i = 0; i < mCis.length; i++) {
+                mCis[i].configModemStatus(0, 0, null);
+            }
+            if (mSvlteCi != null) {
+                mSvlteCi.configModemStatus(0, 0, null);
+            }
+        } else if (((fullType & CARD_TYPE_SIM) == 0 && (fullType & CARD_TYPE_USIM) == 0) ||
+                ((fullType & CARD_TYPE_SIM) == CARD_TYPE_SIM && (fullType & CARD_TYPE_RUIM) == CARD_TYPE_RUIM)) {
+            // CDMA only
+            // 1. no SIM and no USIM
+            // 2. RUIM and SIM (CT 3G card)
+            Rlog.d(LOG_TAG, "SIM hot plug configModemStatus: CDMA only");
+            for (int i = 0; i < mCis.length; i++) {
+                mCis[i].configModemStatus(1, 1, null);
+            }
+            if (mSvlteCi != null) {
+                mSvlteCi.configModemStatus(1, 1, null);
+            }
+        } else if ((fullType & CARD_TYPE_USIM) == CARD_TYPE_USIM && (fullType & CARD_TYPE_CSIM) == CARD_TYPE_CSIM) {
+            // CT LTE
+            Rlog.d(LOG_TAG, "SIM hot plug configModemStatus: CT LTE");
+            for (int i = 0; i < mCis.length; i++) {
+                mCis[i].configModemStatus(2, 1, null);
+            }
+            if (mSvlteCi != null) {
+                mSvlteCi.configModemStatus(2, 1, null);
+            }
+        } else {
+            //other case, may not happen!
+            Rlog.d(LOG_TAG, "SIM hot plug configModemStatus: other case, may not happen!");
         }
     }
 }
