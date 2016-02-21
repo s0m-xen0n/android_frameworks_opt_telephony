@@ -628,6 +628,26 @@ class ImsPhoneCommandInterface extends BaseCommands implements CommandsInterface
     public void storeModemType(int modemType, Message response) {
     }
 
+    // UTK start
+    public void getUtkLocalInfo(Message response) {
+    }
+
+    public void requestUtkRefresh(int type, Message response) {
+    }
+
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+    }
+
+    public void reportUtkServiceIsRunning(Message result) {
+    }
+
+    public void profileDownload(String profile, Message response) {
+    }
+
+    public void queryUtkSetupMenuFromMD(String contents, Message response) {
+    }
+    //UTK end
+
     @Override
     public void setInitialAttachApn(String apn, String protocol, int authType, String username,
             String password, String operatorNumeric, boolean canHandleIms, Message result) {

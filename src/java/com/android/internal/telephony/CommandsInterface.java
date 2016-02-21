@@ -2273,4 +2273,319 @@ public interface CommandsInterface {
     void setFDMode(int mode, int parameter1, int parameter2, Message response);
     public void setScriResult(Handler h, int what, Object obj);
     public void unSetScriResult(Handler h);
+
+    /* C2K part start */
+    /**
+     * Request to recovery telephony.
+     *
+     * @param mode The recovery mode
+     * @param result callback message
+     */
+    void setViaTRM(int mode, Message result);
+
+    /**
+     * Request to get NITZ time.
+     *
+     * @param result callback message
+     */
+    void getNitzTime(Message result);
+
+    /**
+     * Request to switch HPF.
+     * @param enableHPF true if
+     * @param response callback message
+     */
+    void requestSwitchHPF(boolean enableHPF, Message response);
+
+    /**
+     * Request to set avoid SYS.
+     * @param avoidSYS true if
+     * @param response callback message
+     */
+    void setAvoidSYS(boolean avoidSYS, Message response);
+
+    /**
+     * Request to get avoid SYS List.
+     * @param response callback message
+     */
+    void getAvoidSYSList(Message response);
+
+    /**
+     * M: oplmn is the oplmn list download from the specific url.
+     * @param oplmnInfo The info send to the modem
+     * @param response The message to send.
+     */
+    void setOplmn(String oplmnInfo, Message response);
+
+    /**
+     * M: Get the oplmn updated version.
+     * @param response the responding message.
+     */
+    void getOplmnVersion(Message response);
+
+    /**
+     * query CDMA Network Info.
+     * @param response callback message
+     */
+    void queryCDMANetworkInfo(Message response);
+
+    /**
+     * Register the handler for call accepted.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForCallAccepted(Handler h, int what, Object obj);
+
+    /**
+     * Unregister the handler for call accepted.
+     * @param h Handler for notification message.
+     */
+    void unregisterForCallAccepted(Handler h);
+
+    /**
+     * Sets the handler for meid.
+     * @param meid meid string.
+     * @param response callback message.
+     */
+    void setMeid(String meid, Message response);
+
+    /**
+     * Register for via gps event.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForViaGpsEvent(Handler h, int what, Object obj);
+
+    /**
+     * Unregister the handler for via gps event.
+     * @param h Handler for notification message.
+     */
+    void unregisterForViaGpsEvent(Handler h);
+
+    /**
+     * Request to AGPScp connected.
+     * @param connected connected number
+     * @param result callback message
+     */
+    void requestAGPSTcpConnected(int connected, Message result);
+
+    /**
+     * request AGPS set mpc ip & port address.
+     *
+     * @param ip ip address
+     * @param port port to use
+     * @param result callback message
+     */
+    void requestAGPSSetMpcIpPort(String ip, String port, Message result);
+
+    /**
+     * request AGPS get mpc ip & port address.
+     *
+     * @param result callback message
+     */
+    void requestAGPSGetMpcIpPort(Message result);
+
+    /**
+     * request set ets device.
+     *
+     * @param dev 0-uart,1-usb,2-sdio
+     * @param result callback message
+     */
+     void requestSetEtsDev(int dev, Message result);
+
+     /**
+      * For China Telecom auto-register sms.
+      *
+      * @param response The request's response
+      */
+     void queryCDMASmsAndPBStatus(Message response);
+
+     /**
+      * For China Telecom auto-register sms.
+      *
+      * @param response The request's response
+      */
+     void queryCDMANetWorkRegistrationState(Message response);
+
+     /**
+      * Register for network change callback.
+      *
+      * @param h Handler for notification message.
+      * @param what User-defined message code.
+      * @param obj User object.
+      */
+     void registerForNetworkTypeChanged(Handler h, int what, Object obj);
+
+     /**
+      * Unregister for network change callback.
+      *
+      * @param h Handler for notification message.
+      */
+     void unregisterForNetworkTypeChanged(Handler h);
+
+     /**
+      * Set ARSI report threshold.
+      *
+      * @param threshold The threshold to set
+      * @param response The request's response
+      */
+     void setArsiReportThreshold(int threshold, Message response);
+
+     /**
+      * Set MDN number.
+      * @param mdn The mdn numer to set
+      * @param response The request's response
+      */
+     void setMdnNumber(String mdn, Message response);
+
+    // UTK start
+    /**
+     * set on utk session end.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void setOnUtkSessionEnd(Handler h, int what, Object obj);
+
+    /**
+     * unset on utk session end.
+     * @param h Handler for notification message.
+     */
+    void unSetOnUtkSessionEnd(Handler h);
+
+    /**
+     * set on utk proactive cmd.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void setOnUtkProactiveCmd(Handler h, int what, Object obj);
+
+    /**
+     * unset on utk proactive cmd.
+     * @param h Handler for notification message.
+     */
+    void unSetOnUtkProactiveCmd(Handler h);
+
+    /**
+     * set on utk event.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void setOnUtkEvent(Handler h, int what, Object obj);
+
+    /**
+     * unset on utk event.
+     * @param h Handler for notification message.
+     */
+    void unSetOnUtkEvent(Handler h);
+
+    /**
+     * handle call setup request from uim.
+     * @param accept true if.
+     * @param response callback message.
+     */
+    public void handleCallSetupRequestFromUim(boolean accept, Message response);
+
+    /**
+     * report utk service is running.
+     * @param result callback message.
+     */
+    void reportUtkServiceIsRunning(Message result);
+    /**
+     * Query Local Info.
+     *
+     * @param result callback message
+     */
+    void getUtkLocalInfo(Message result);
+
+    /**
+     * Send a UTK refresh command.
+     *
+     * @param refreshType refresh type
+     * @param result callback message
+     */
+    void requestUtkRefresh(int refreshType, Message result);
+
+    /**
+     * When Vendor UtkService is running, download profile to tell Ruim what capability phone has.
+     *
+     * @param response callback message
+     *
+     * @param profile  profile downloaded into Ruim
+     */
+    void profileDownload(String profile, Message response);
+    //UTK end
+
+    /**
+     * C2K SVLTE remote SIM access.
+     * @param modemStatus The Modem status: 0: Only MD1 active
+     *                                      1: MD1's RF is closed, but MD1's SIM task is still
+     *                                         working onlyfor MD3 SIM remove access and MD3 active
+     *                                      2: Both MD1 and MD3 active
+     * @param remoteSimProtocol MD3 decide to access SIM from which protocl of MD1
+     *                          0: MD3 access local card
+     *                          1: MD1 access MD1's SIM task1
+     *                          2: MD1 access MD1's SIM task2
+     * @param result callback message
+     */
+    void configModemStatus(int modemStatus, int remoteSimProtocol, Message result);
+
+    /**
+     * C2K SVLTE CDMA RAT control.
+     * Used to config MD3, set iratMode 1 to enter CDMA only mode.
+     * @param iratMode The IRAT mode set to MD3: 0: AP IRAT mode.
+     *                                           1: MD IRAT mode.
+     * @param result callback message
+     */
+    void configIratMode(int iratMode, Message result);
+    /* C2k part end */
+
+    /* TODO: what does this do? */
+    /*
+    void setBandMode (int[] bandMode, Message response);
+    */
+
+    public void registerForAbnormalEvent(Handler h, int what, Object obj);
+
+    public void unregisterForAbnormalEvent(Handler h);
+
+    /**
+      * Rregister for cdma card type.
+      * @param h Handler for network information messages.
+      * @param what User-defined message code.
+      * @param obj User object.
+      */
+    void registerForCdmaCardType(Handler h, int what, Object obj);
+
+    /**
+      * Rregister for cdma card type.
+      * @param h Handler for network information messages.
+      */
+    void unregisterForCdmaCardType(Handler h);
+
+    /// M: [C2K] for eng mode start
+    /**
+     * M: Rregister on network information for eng mode.
+     * @param h Handler for network information messages.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForEngModeNetworkInfo(Handler h, int what, Object obj);
+
+    /**
+     * M: Unrregister on network information for eng mode.
+     * @param h Handler for network information messages.
+     */
+    void unregisterForEngModeNetworkInfo(Handler h);
+    /// M: [C2K] for eng mode end
+
+    /**
+     * M: return display state to RILD
+     *
+     */
+    public int getDisplayState();
 }

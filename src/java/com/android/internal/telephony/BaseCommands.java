@@ -106,6 +106,7 @@ public abstract class BaseCommands implements CommandsInterface {
     protected RegistrantList mVirtualSimOff = new RegistrantList();
     protected RegistrantList mSimPlugOutRegistrants = new RegistrantList();
     protected RegistrantList mSimPlugInRegistrants = new RegistrantList();
+    protected RegistrantList mCdmaCardTypeRegistrants = new RegistrantList();
     protected RegistrantList mCommonSlotNoChangedRegistrants = new RegistrantList();
     protected RegistrantList mDataAllowedRegistrants = new RegistrantList();
     protected RegistrantList mNeighboringInfoRegistrants = new RegistrantList();
@@ -115,6 +116,33 @@ public abstract class BaseCommands implements CommandsInterface {
     protected Registrant mRegistrationSuspendedRegistrant;
     // M: fast dormancy.
     protected Registrant mScriResultRegistrant;
+    /// M: [C2K] for eng mode
+    protected RegistrantList mEngModeNetworkInfoRegistrant = new RegistrantList();
+    /* C2K part start */
+    protected RegistrantList mViaGpsEvent = new RegistrantList();
+    protected RegistrantList mAcceptedRegistrant = new RegistrantList();
+    protected RegistrantList mNetworkTypeChangedRegistrant = new RegistrantList();
+    protected Registrant mUtkSessionEndRegistrant;
+    protected Registrant mUtkProCmdRegistrant;
+    protected Registrant mUtkEventRegistrant;
+    protected RegistrantList mInvalidSimDetectedRegistrant = new RegistrantList();
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @{
+    protected RegistrantList mMccMncChangeRegistrants = new RegistrantList();
+    /// M: [C2K][IR] Support SVLTE IR feature. @}
+
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+    protected RegistrantList mGmssRatChangedRegistrant = new RegistrantList();
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+
+    /// M: [C2K] for ps type changed.
+    protected RegistrantList mDataNetworkTypeChangedRegistrant = new RegistrantList();
+
+    /// M: [C2K][MD IRAT] add IRat state change registrant.
+    protected RegistrantList mIratStateChangeRegistrant = new RegistrantList();
+    /* C2K part end */
+
+    protected RegistrantList mAbnormalEventRegistrant = new RegistrantList();
 
     // Preferred network type received from PhoneFactory.
     // This is used when establishing a connection to the
@@ -132,6 +160,8 @@ public abstract class BaseCommands implements CommandsInterface {
     protected boolean mbWaitingForECFURegistrants = false;
     protected Object mCfuReturnValue = null; ///* M: SS part */
     /* M: call control part end */
+
+    protected Object mCdmaCardTypeValue = null;
 
     public BaseCommands(Context context) {
         mContext = context;  // May be null (if so we won't log statistics)
@@ -1056,6 +1086,29 @@ public abstract class BaseCommands implements CommandsInterface {
         mSimPlugInRegistrants.remove(h);
     }
 
+    /**
+      * Rregister for cdma card type.
+      * @param h Handler for network information messages.
+      * @param what User-defined message code.
+      * @param obj User object.
+      */
+    public void registerForCdmaCardType(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mCdmaCardTypeRegistrants.add(r);
+
+        if (mCdmaCardTypeValue != null) {
+            r.notifyRegistrant(new AsyncResult(null, mCdmaCardTypeValue, null));
+        }
+    }
+
+    /**
+      * Rregister for cdma card type.
+      * @param h Handler for network information messages.
+      */
+    public void unregisterForCdmaCardType(Handler h) {
+        mCdmaCardTypeRegistrants.remove(h);
+    }
+
     public void registerForCommonSlotNoChanged(Handler h, int what, Object obj) {
         Registrant r = new Registrant(h, what, obj);
         mCommonSlotNoChangedRegistrants.add(r);
@@ -1144,5 +1197,159 @@ public abstract class BaseCommands implements CommandsInterface {
     }
 
     public void setFDMode(int mode, int parameter1, int parameter2, Message response){
+    }
+
+    /* C2K part start */
+    @Override
+    public void setViaTRM(int mode, Message result) {}
+
+    @Override
+    public void getNitzTime(Message result) {}
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {}
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {}
+
+    @Override
+    public void getAvoidSYSList(Message response) {}
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {}
+
+    @Override
+    public void setOplmn(String oplmnInfo, Message response) {
+    }
+
+    @Override
+    public void getOplmnVersion(Message response) {
+    }
+
+    @Override
+    public void registerForCallAccepted(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mAcceptedRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForCallAccepted(Handler h) {
+        mAcceptedRegistrant.remove(h);
+    }
+
+    @Override
+    public void registerForViaGpsEvent(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mViaGpsEvent.add(r);
+    }
+
+    @Override
+    public void unregisterForViaGpsEvent(Handler h) {
+        mViaGpsEvent.remove(h);
+    }
+
+    @Override
+    public void setMeid(String meid, Message response) {}
+
+    @Override
+    public void setArsiReportThreshold(int threshold, Message response) {}
+
+    @Override
+    public void registerForNetworkTypeChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mNetworkTypeChangedRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForNetworkTypeChanged(Handler h) {
+        mNetworkTypeChangedRegistrant.remove(h);
+    }
+
+    @Override
+    public void queryCDMASmsAndPBStatus(Message response) {}
+
+    @Override
+    public void queryCDMANetWorkRegistrationState(Message response) {}
+
+    @Override
+    public void requestSetEtsDev(int dev, Message result) {}
+
+    @Override
+    public void requestAGPSGetMpcIpPort(Message result) {}
+
+    @Override
+    public void requestAGPSSetMpcIpPort(String ip, String port, Message result) {}
+
+    @Override
+    public void requestAGPSTcpConnected(int connected, Message result) {}
+
+    @Override
+    public void setMdnNumber(String mdn, Message response) {}
+
+    // UTK start
+    @Override
+    public void setOnUtkSessionEnd(Handler h, int what, Object obj) {
+        mUtkSessionEndRegistrant = new Registrant(h, what, obj);
+    }
+
+    @Override
+    public void unSetOnUtkSessionEnd(Handler h) {
+        mUtkSessionEndRegistrant.clear();
+    }
+
+    @Override
+    public void setOnUtkProactiveCmd(Handler h, int what, Object obj) {
+        mUtkProCmdRegistrant = new Registrant(h, what, obj);
+    }
+
+    @Override
+    public void unSetOnUtkProactiveCmd(Handler h) {
+        mUtkProCmdRegistrant.clear();
+    }
+
+    @Override
+    public void setOnUtkEvent(Handler h, int what, Object obj) {
+        mUtkEventRegistrant = new Registrant(h, what, obj);
+    }
+
+    @Override
+    public void unSetOnUtkEvent(Handler h) {
+        mUtkEventRegistrant.clear();
+    }
+    //UTK end
+
+    //C2K SVLTE remote SIM access
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {}
+
+    @Override
+    public void configIratMode(int iratMode, Message result) {}
+    /* C2k part end */
+
+    public void registerForAbnormalEvent(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mAbnormalEventRegistrant.add(r);
+    }
+
+    public void unregisterForAbnormalEvent(Handler h) {
+        mAbnormalEventRegistrant.remove(h);
+    }
+
+    /// M: [C2K] for eng mode start
+    @Override
+    public void registerForEngModeNetworkInfo(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mEngModeNetworkInfoRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForEngModeNetworkInfo(Handler h) {
+        mEngModeNetworkInfoRegistrant.remove(h);
+    }
+    /// M: [C2K] for eng mode end
+
+    public int getDisplayState() {
+        //return Display type: Unknown display type.
+        return 0;
     }
 }

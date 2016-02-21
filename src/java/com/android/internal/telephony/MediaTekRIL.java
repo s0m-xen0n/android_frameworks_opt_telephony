@@ -880,6 +880,16 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_BTSIM_POWERON_OR_RESETSIM: ret = responseString(p); break;
             case RIL_REQUEST_BTSIM_TRANSFERAPDU: ret = responseString(p); break;
 
+            /// M: IMS ViLTE feature. @{
+            case RIL_REQUEST_SET_VT_CAPABILITY: ret = responseVoid(p); break;
+            case RIL_REQUEST_VT_DIAL: ret =  responseVoid(p); break;
+            case RIL_REQUEST_VOICE_ACCEPT: ret = responseVoid(p); break;
+            /// @}
+
+            /// M: IMS VoLTE conference dial feature. @{
+            case RIL_REQUEST_CONFERENCE_DIAL: ret =  responseVoid(p); break;
+            /// @}
+
             /* M: call control part start */
             case RIL_REQUEST_SET_IMS_CALL_STATUS: ret = responseVoid(p); break;
             /* M: call control part end */
@@ -899,13 +909,30 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_AGPS_SET_MPC_IPPORT: ret = responseVoid(p); break;
             case RIL_REQUEST_AGPS_GET_MPC_IPPORT: ret = responseStrings(p); break;
             case RIL_REQUEST_SET_MEID: ret = responseVoid(p); break;
-            case RIL_REQUEST_SET_REG_RESUME: ret =  responseVoid(p); break;
-            case RIL_REQUEST_ENABLE_REG_PAUSE: ret =  responseVoid(p); break;
             case RIL_REQUEST_SET_ETS_DEV: ret =  responseVoid(p); break;
             case RIL_REQUEST_WRITE_MDN: ret =  responseVoid(p); break;
             case RIL_REQUEST_SET_VIA_TRM: ret = responseVoid(p); break;
             case RIL_REQUEST_SET_ARSI_THRESHOLD: ret =  responseVoid(p); break;
+            case RIL_REQUEST_SET_ACTIVE_PS_SLOT: ret = responseVoid(p); break;
+            case RIL_REQUEST_CONFIRM_INTER_3GPP_IRAT_CHANGE: ret = responseVoid(p); break;
+            case RIL_REQUEST_CONFIG_IRAT_MODE: ret = responseVoid(p); break;
+            case RIL_REQUEST_QUERY_UTK_MENU_FROM_MD: ret =  responseString(p); break;
             /* M: C2K part end */
+
+            case RIL_REQUEST_MODEM_POWERON: ret =  responseVoid(p); break;
+            case RIL_REQUEST_MODEM_POWEROFF: ret =  responseVoid(p); break;
+
+            /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
+            case RIL_REQUEST_SET_SVLTE_RAT_MODE: ret =  responseVoid(p); break;
+            /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
+
+            /// M: [C2K][IR] Support SVLTE IR feature. @{
+            case RIL_REQUEST_SET_REG_SUSPEND_ENABLED: ret = responseVoid(p); break;
+            case RIL_REQUEST_RESUME_REGISTRATION: ret = responseVoid(p); break;
+            case RIL_REQUEST_SET_REG_SUSPEND_ENABLED_CDMA: ret =  responseVoid(p); break;
+            case RIL_REQUEST_RESUME_REGISTRATION_CDMA: ret =  responseVoid(p); break;
+            /// M: [C2K][IR] Support SVLTE IR feature. @}
+
             default:
                 throw new RuntimeException("Unrecognized solicited response: " + rr.mRequest);
             //break;
@@ -1071,9 +1098,7 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
             case RIL_UNSOL_MO_DATA_BARRING_INFO: ret = responseInts(p); break;
             case RIL_UNSOL_SSAC_BARRING_INFO: ret = responseInts(p); break;
-//MTK_TC1_FEATURE for LGE CSMCC_MO_CALL_MODIFIED {
-            case RIL_UNSOL_RESPONSE_MO_CALL_STATE_CHANGED: ret =  responseStrings(p); break;
-//}
+
             /* M: C2K part start*/
             case RIL_UNSOL_CDMA_CALL_ACCEPTED: ret = responseVoid(p); break;
             case RIL_UNSOL_UTK_SESSION_END: ret = responseVoid(p); break;
@@ -1081,9 +1106,49 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_UNSOL_UTK_EVENT_NOTIFY: ret = responseString(p); break;
             case RIL_UNSOL_VIA_GPS_EVENT: ret = responseInts(p); break;
             case RIL_UNSOL_VIA_NETWORK_TYPE_CHANGE: ret = responseInts(p); break;
-            case RIL_UNSOL_VIA_PLMN_CHANGE_REG_PAUSE: ret = responseStrings(p); break;
             case RIL_UNSOL_VIA_INVALID_SIM_DETECTED: ret = responseVoid(p); break;
             /* M: C2K part end*/
+            case RIL_UNSOL_ABNORMAL_EVENT: ret = responseStrings(p); break;
+            case RIL_UNSOL_CDMA_CARD_TYPE: ret = responseInts(p); break;
+            /// M: [C2K] for eng mode start
+            case RIL_UNSOL_ENG_MODE_NETWORK_INFO:
+                ret = responseStrings(p);
+                unsljLog(response);
+                break;
+            /// M: [C2K] for eng mode end
+
+            /// M: [C2K][IR] Support SVLTE IR feature. @{
+            case RIL_UNSOL_CDMA_PLMN_CHANGED: ret = responseStrings(p); break;
+            /// M: [C2K][IR] Support SVLTE IR feature. @}
+
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+            case RIL_UNSOL_GMSS_RAT_CHANGED: ret = responseInts(p); break;
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+
+            // MTK-START, SMS part
+            // SMS ready
+            case RIL_UNSOL_SMS_READY_NOTIFICATION: ret = responseVoid(p); break;
+            // New SMS but phone storage is full
+            case RIL_UNSOL_ME_SMS_STORAGE_FULL: ret = responseVoid(p); break;
+            // ETWS primary notification
+            case RIL_UNSOL_RESPONSE_ETWS_NOTIFICATION: ret = responseEtwsNotification(p); break;
+            // MTK-END, SMS part
+
+            /// M: [C2K] For ps type changed.
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_TYPE_CHANGED: ret = responseInts(p); break;
+
+            ///M: [C2K][MD IRAT] start @{
+            /*
+            case RIL_UNSOL_INTER_3GPP_IRAT_STATE_CHANGE:
+                riljLog(" RIL_UNSOL_INTER_3GPP_IRAT_STATE_CHANGE...");
+                ret = responseIratStateChange(p);
+                break;
+            */
+            /// }@ [C2K][MD IRAT] end
+            // M: [C2K] AP IRAT start.
+            case RIL_UNSOL_LTE_BG_SEARCH_STATUS: ret = responseInts(p); break;
+            case RIL_UNSOL_LTE_EARFCN_INFO: ret = responseInts(p); break;
+            // M: [C2K] AP IRAT end.
             default:
                 // Rewind the Parcel
                 p.setDataPosition(dataPosition);
@@ -1549,9 +1614,22 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_BTSIM_POWERON_OR_RESETSIM: return "RIL_REQUEST_BTSIM_POWERON_OR_RESETSIM";
             case RIL_REQUEST_BTSIM_TRANSFERAPDU: return "RIL_REQUEST_SEND_BTSIM_TRANSFERAPDU";
 
+            /// M: IMS ViLTE feature. @{
+            case RIL_REQUEST_SET_VT_CAPABILITY: return "RIL_REQUEST_SET_VT_CAPABILITY";
+            case RIL_REQUEST_VT_DIAL: return "RIL_REQUEST_VT_DIAL";
+            case RIL_REQUEST_VOICE_ACCEPT: return "RIL_REQUEST_VOICE_ACCEPT";
+            /// @}
+
+            /// M: IMS VoLTE conference dial feature. @{
+            case RIL_REQUEST_CONFERENCE_DIAL: return "RIL_REQUEST_CONFERENCE_DIAL";
+            /// @}
+
             /* M: call control part start */
             case RIL_REQUEST_SET_IMS_CALL_STATUS: return "RIL_REQUEST_SET_IMS_CALL_STATUS";
             /* M: call control part end */
+
+            /// M: SVLTE remote SIM access feature
+            case RIL_REQUEST_CONFIG_MODEM_STATUS: return "RIL_REQUEST_CONFIG_MODEM_STATUS";
 
             /* M: C2K part start */
             case RIL_REQUEST_GET_NITZ_TIME: return "RIL_REQUEST_GET_NITZ_TIME";
@@ -1570,13 +1648,36 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_AGPS_SET_MPC_IPPORT: return "RIL_REQUEST_AGPS_SET_MPC_IPPORT";
             case RIL_REQUEST_AGPS_GET_MPC_IPPORT: return "RIL_REQUEST_AGPS_GET_MPC_IPPORT";
             case RIL_REQUEST_SET_MEID: return "RIL_REQUEST_SET_MEID";
-            case RIL_REQUEST_SET_REG_RESUME: return "RIL_REQUEST_SET_REG_RESUME";
-            case RIL_REQUEST_ENABLE_REG_PAUSE: return "RIL_REQUEST_ENABLE_REG_PAUSE";
             case RIL_REQUEST_SET_ETS_DEV: return "RIL_REQUEST_SET_ETS_DEV";
             case RIL_REQUEST_WRITE_MDN: return "RIL_REQUEST_WRITE_MDN";
             case RIL_REQUEST_SET_VIA_TRM: return "RIL_REQUEST_SET_VIA_TRM";
             case RIL_REQUEST_SET_ARSI_THRESHOLD: return "RIL_REQUEST_SET_ARSI_THRESHOLD";
+            case RIL_REQUEST_QUERY_UTK_MENU_FROM_MD: return "RIL_REQUEST_QUERY_UTK_MENU_FROM_MD";
             /* M: C2K part end */
+            // M: [C2K][MD IRAT]RIL
+            case RIL_REQUEST_SET_ACTIVE_PS_SLOT: return "RIL_REQUEST_SET_ACTIVE_PS_SLOT";
+            case RIL_REQUEST_CONFIRM_INTER_3GPP_IRAT_CHANGE:
+                return "RIL_REQUEST_CONFIRM_INTER_3GPP_IRAT_CHANGE";
+            /// @}
+            // M: [C2K][AP IRAT] start
+            case RIL_REQUEST_TRIGGER_LTE_BG_SEARCH: return "RIL_REQUEST_TRIGGER_LTE_BG_SEARCH";
+            case RIL_REQUEST_SET_LTE_EARFCN_ENABLED: return "RIL_REQUEST_SET_LTE_EARFCN_ENABLED";
+
+            /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
+            case RIL_REQUEST_SET_SVLTE_RAT_MODE: return "RIL_REQUEST_SET_SVLTE_RAT_MODE";
+            /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
+
+            /// M: [C2K][IR] Support SVLTE IR feature. @{
+            case RIL_REQUEST_SET_REG_SUSPEND_ENABLED: return "RIL_REQUEST_SET_REG_SUSPEND_ENABLED";
+            case RIL_REQUEST_RESUME_REGISTRATION: return "RIL_REQUEST_RESUME_REGISTRATION";
+            case RIL_REQUEST_SET_REG_SUSPEND_ENABLED_CDMA:
+                return "RIL_REQUEST_SET_REG_SUSPEND_ENABLED_CDMA";
+            case RIL_REQUEST_RESUME_REGISTRATION_CDMA:
+                return "RIL_REQUEST_RESUME_REGISTRATION_CDMA";
+            case RIL_REQUEST_CONFIG_IRAT_MODE:
+                return "RIL_REQUEST_CONFIG_IRAT_MODE";
+            /// M: [C2K][IR] Support SVLTE IR feature. @}
+
             default: return "<unknown request> (" + request + ")";
         }
     }
@@ -1762,9 +1863,7 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
             case RIL_UNSOL_MO_DATA_BARRING_INFO: return "RIL_UNSOL_MO_DATA_BARRING_INFO";
             case RIL_UNSOL_SSAC_BARRING_INFO: return "RIL_UNSOL_SSAC_BARRING_INFO";
-//MTK_TC1_FEATURE for LGE CSMCC_MO_CALL_MODIFIED {
-			case RIL_UNSOL_RESPONSE_MO_CALL_STATE_CHANGED: return "UNSOL_RESPONSE_MO_CALL_STATE_CHANGED";
-//}
+
             /* M: C2K part start */
             case RIL_UNSOL_CDMA_CALL_ACCEPTED: return "RIL_UNSOL_CDMA_CALL_ACCEPTED";
             case RIL_UNSOL_UTK_SESSION_END: return "RIL_UNSOL_UTK_SESSION_END";
@@ -1772,9 +1871,38 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_UNSOL_UTK_EVENT_NOTIFY: return "RIL_UNSOL_UTK_EVENT_NOTIFY";
             case RIL_UNSOL_VIA_GPS_EVENT: return "RIL_UNSOL_VIA_GPS_EVENT";
             case RIL_UNSOL_VIA_NETWORK_TYPE_CHANGE: return "RIL_UNSOL_VIA_NETWORK_TYPE_CHANGE";
-            case RIL_UNSOL_VIA_PLMN_CHANGE_REG_PAUSE: return "RIL_UNSOL_VIA_PLMN_CHANGE_REG_PAUSE";
             case RIL_UNSOL_VIA_INVALID_SIM_DETECTED: return "RIL_UNSOL_VIA_INVALID_SIM_DETECTED";
+            /// M: [C2K][IR] Support SVLTE IR feature. @{
+            case RIL_UNSOL_CDMA_PLMN_CHANGED: return "RIL_UNSOL_CDMA_PLMN_CHANGED";
+            /// M: [C2K][IR] Support SVLTE IR feature. @}
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+            case RIL_UNSOL_GMSS_RAT_CHANGED: return "RIL_UNSOL_GMSS_RAT_CHANGED";
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+            /// M: [C2K] for ps type changed.
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_TYPE_CHANGED:
+                return "RIL_UNSOL_RESPONSE_DATA_NETWORK_TYPE_CHANGED";
             /* M: C2K part end */
+            case RIL_UNSOL_ABNORMAL_EVENT: return "RIL_UNSOL_ABNORMAL_EVENT";
+            case RIL_UNSOL_CDMA_CARD_TYPE: return "RIL_UNSOL_CDMA_CARD_TYPE";
+            /// M: [C2K][MD IRAT] start
+            case RIL_UNSOL_INTER_3GPP_IRAT_STATE_CHANGE:
+                return "UNSOL_INTER_3GPP_IRAT_STATE_CHANGE";
+            /// @} [C2K][MD IRAT] end
+            /// M:[C2K] for eng mode
+            case RIL_UNSOL_ENG_MODE_NETWORK_INFO: return "RIL_UNSOL_ENG_MODE_NETWORK_INFO";
+            // M: [C2K][AP IRAT]
+            case RIL_UNSOL_LTE_BG_SEARCH_STATUS: return "RIL_UNSOL_LTE_BG_SEARCH_STATUS";
+            case RIL_UNSOL_LTE_EARFCN_INFO: return "RIL_UNSOL_LTE_EARFCN_INFO";
+
+            // MTK-START, SMS part
+            // SMS ready notification
+            case RIL_UNSOL_SMS_READY_NOTIFICATION: return "RIL_UNSOL_SMS_READY_NOTIFICATION";
+            // New sms but phone storage is full
+            case RIL_UNSOL_ME_SMS_STORAGE_FULL: return "RIL_UNSOL_ME_SMS_STORAGE_FULL";
+            // ETWS primary notification
+            case RIL_UNSOL_RESPONSE_ETWS_NOTIFICATION: return "RIL_UNSOL_RESPONSE_ETWS_NOTIFICATION";
+            // MTK-END, SMS part
+
             default: return "<unknown response> (" + request + ")";
         }
     }

@@ -1804,6 +1804,32 @@ public final class SimulatedCommands extends BaseCommands
     public void storeModemType(int modemType, Message response) {
     }
 
+    // UTK start
+    public void getUtkLocalInfo(Message response) {
+        unimplemented(response);
+    }
+
+    public void requestUtkRefresh(int type, Message response) {
+        unimplemented(response);
+    }
+
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+        unimplemented(response);
+    }
+
+    public void reportUtkServiceIsRunning(Message result) {
+        resultSuccess(result, null);
+    }
+
+    public void profileDownload(String profile, Message response) {
+        resultSuccess(response, null);
+    }
+
+    public void queryUtkSetupMenuFromMD(String contents, Message response) {
+        resultSuccess(response, null);
+    }
+    //UTK end
+
     @Override
     public void setInitialAttachApn(String apn, String protocol, int authType, String username,
             String password, String operatorNumeric, boolean canHandleIms, Message result) {
