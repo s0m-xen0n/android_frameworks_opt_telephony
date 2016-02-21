@@ -529,6 +529,14 @@ public class UiccController extends Handler {
                         }
                     }
                     break;
+                case EVENT_SIM_PLUG_IN:
+                    if (DBG) log("Received EVENT_SIM_PLUG_IN, index=" + index);
+                    configModemRemoteSimAccess();
+                    break;
+                case EVENT_SIM_PLUG_OUT:
+                    if (DBG) log("Received EVENT_SIM_PLUG_OUT, index=" + index);
+                    configModemRemoteSimAccess();
+                    break;
                 case EVENT_REFRESH:
                     ar = (AsyncResult)msg.obj;
                     if (DBG) log("Sim REFRESH received");
