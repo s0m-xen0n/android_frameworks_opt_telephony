@@ -42,6 +42,12 @@ import com.android.internal.telephony.sip.SipPhoneFactory;
 import com.android.internal.telephony.uicc.IccCardProxy;
 import com.android.internal.telephony.uicc.UiccController;
 
+import com.mediatek.internal.telephony.RadioManager;
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.LteDcPhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteDcPhone;
+import com.mediatek.internal.telephony.ltedc.svlte.SvltePhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteRatController;
 import com.mediatek.internal.telephony.worldphone.IWorldPhone;
 import com.mediatek.internal.telephony.worldphone.WorldPhoneUtil;
 import com.mediatek.internal.telephony.worldphone.WorldPhoneWrapper;
@@ -80,7 +86,17 @@ public class PhoneFactory {
     static private Context sContext;
 
     // MTK
+    static private RadioManager mRadioManager;
     static private IWorldPhone sWorldPhone = null;
+
+    // CDMA
+    static final String EVDO_DT_SUPPORT = "ril.evdo.dtsupport";
+    // SVLTE RIL instance
+    static private CommandsInterface sCommandsInterfaceLteDc;
+    // SVLTE LTE DC phone
+    static private SvlteDcPhone sCdmaLteDcPhone;
+    // SVLTE LTE dual connection PhoneProxy
+    static private LteDcPhoneProxy sLteDcPhoneProxy;
 
     //***** Class Methods
 
@@ -149,8 +165,13 @@ public class PhoneFactory {
                 String sRILClassname = SystemProperties.get("ro.telephony.ril_class", "RIL").trim();
                 Rlog.i(LOG_TAG, "RILClassname is " + sRILClassname);
 
+                // MTK
+                int capabilityPhoneId = Integer.valueOf(
+                        SystemProperties.get(PhoneConstants.CAPABILITY_SWITCH_PROP, "1"));
+
                 for (int i = 0; i < numPhones; i++) {
                     //reads the system properties and makes commandsinterface
+                    /*
                     try {
 //                        // Get preferred network type.
 //                        TODO: Sishir added this code to but we need a new technique for MSim
@@ -172,6 +193,44 @@ public class PhoneFactory {
                         networkModes[i] = Phone.NT_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
                         TelephonyManager.putIntAtIndex( context.getContentResolver(),
                                 Settings.Global.PREFERRED_NETWORK_MODE, i, networkModes[i]);
+                    }
+                    */
+
+                    // MTK
+                    // EVDO project need phone type to be C+G
+                    if (FeatureOptionUtils.isEvdoDTSupport()) {
+                        try {
+                            networkModes[i] =
+                                    TelephonyManager.getIntAtIndex(context.getContentResolver(),
+                                    Settings.Global.PREFERRED_NETWORK_MODE, i);
+                        } catch (SettingNotFoundException snfe) {
+                            Rlog.e(LOG_TAG, "Settings Exception Reading Value At Index for"
+                                    + " Settings.Global.PREFERRED_NETWORK_MODE");
+                            networkModes[i] = preferredNetworkMode;
+                        }
+                        // workaround for cannot get phone 1 network mode
+                        if (i == 1) {
+                            networkModes[i] = RILConstants.NETWORK_MODE_GSM_ONLY;
+                        }
+                        Rlog.i(LOG_TAG, "EVDO Network Mode set to " +
+                        Integer.toString(networkModes[i]));
+                    } else {
+                        if (i == (capabilityPhoneId - 1)) {
+                            networkModes[i] = calculatePreferredNetworkType(context);
+                        } else {
+                            networkModes[i] =
+                                    (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1)
+                                    ? RILConstants.NETWORK_MODE_LTE_GSM_WCDMA
+                                    : RILConstants.NETWORK_MODE_GSM_ONLY;
+                        }
+                        /// M: SVLTE Phone's network type should always set to CDMA,
+                        /// and SvltePhoneProxy will update phone type after radio
+                        /// available according to SVLTE RAT mode. @{
+                        if (FeatureOptionUtils.isCdmaLteDcSupport()
+                                && FeatureOptionUtils.getExternalModemSlot() == i) {
+                            networkModes[i] = RILConstants.NETWORK_MODE_CDMA;
+                        }
+                        /// @}
                     }
 
                     Rlog.i(LOG_TAG, "Network Mode set to " + Integer.toString(networkModes[i]));
@@ -201,6 +260,9 @@ public class PhoneFactory {
                 sModemBindingPolicyHandler = ModemBindingPolicyHandler.make(context,
                         mUiccController, sCommandsInterfaces);
 
+                // MTK
+                mRadioManager = RadioManager.init(context, numPhones, sCommandsInterfaces);
+
                 for (int i = 0; i < numPhones; i++) {
                     PhoneBase phone = null;
                     int phoneType = TelephonyManager.getPhoneType(networkModes[i]);
@@ -208,12 +270,58 @@ public class PhoneFactory {
                         phone = new GSMPhone(context,
                                 sCommandsInterfaces[i], sPhoneNotifier, i);
                     } else if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
-                        phone = new CDMALTEPhone(context,
-                                sCommandsInterfaces[i], sPhoneNotifier, i);
+                        // MTK
+                        switch (TelephonyManager.getLteOnCdmaModeStatic()) {
+                            case PhoneConstants.LTE_ON_CDMA_TRUE: {
+                                phone = new CDMALTEPhone(context, sCommandsInterfaces[i],
+                                        sPhoneNotifier, i);
+                                break;
+                            }
+                            case PhoneConstants.LTE_ON_CDMA_FALSE:
+                            case PhoneConstants.LTE_ON_CDMA_UNKNOWN:
+                            default: {
+                                phone = new CDMAPhone(context, sCommandsInterfaces[i],
+                                        sPhoneNotifier, i);
+                                break;
+                            }
+                        }
                     }
                     Rlog.i(LOG_TAG, "Creating Phone with type = " + phoneType + " sub = " + i);
 
-                    sProxyPhones[i] = new PhoneProxy(phone);
+                    // MTK SVLTE: assume SVLTE is on the first sub
+                    if (i == 0 && FeatureOptionUtils.isCdmaLteDcSupport()) {
+                        int networkType = RILConstants.NETWORK_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
+                        if (!FeatureOptionUtils.isCdmaMdIratSupport()) {
+                            networkType = RILConstants.NETWORK_MODE_LTE_ONLY;
+                        }
+                        try {
+                            sCommandsInterfaceLteDc = instantiateCustomRIL(
+                                    sRILClassname,
+                                    context,
+                                    networkType,
+                                    cdmaSubscription,
+                                    SubscriptionManager.LTE_DC_PHONE_ID);
+                        } catch (Exception e) {
+                            // 6 different types of exceptions are thrown here that it's
+                            // easier to just catch Exception as our "error handling" is the same.
+                            // Yes, we're blocking the whole thing and making the radio unusable. That's by design.
+                            // The log message should make it clear why the radio is broken
+                            while (true) {
+                                Rlog.e(LOG_TAG, "Unable to construct custom RIL class", e);
+                                try {Thread.sleep(10000);} catch (InterruptedException ie) {}
+                            }
+                        }
+                        sCdmaLteDcPhone = new SvlteDcPhone(context,
+                                sCommandsInterfaceLteDc, sPhoneNotifier,
+                                SubscriptionManager.LTE_DC_PHONE_ID);
+                        sLteDcPhoneProxy = new SvltePhoneProxy(sCdmaLteDcPhone, phone);
+                        sLteDcPhoneProxy.initialize();
+                        sProxyPhones[i] = sLteDcPhoneProxy;
+                        mUiccController.setSvlteCi(sCommandsInterfaceLteDc);
+                        mUiccController.setSvlteIndex(0);
+                    } else {
+                        sProxyPhones[i] = new PhoneProxy(phone);
+                    }
                 }
                 mProxyController = ProxyController.getInstance(context, sProxyPhones,
                         mUiccController, sCommandsInterfaces);
@@ -255,8 +363,20 @@ public class PhoneFactory {
     public static Phone getCdmaPhone(int phoneId) {
         Phone phone;
         synchronized(PhoneProxy.lockForRadioTechnologyChange) {
-            phone = new CDMALTEPhone(sContext, sCommandsInterfaces[phoneId],
-                    sPhoneNotifier, phoneId);
+            switch (TelephonyManager.getLteOnCdmaModeStatic()) {
+                case PhoneConstants.LTE_ON_CDMA_TRUE: {
+                    phone = new CDMALTEPhone(sContext, sCommandsInterfaces[phoneId],
+                            sPhoneNotifier, phoneId);
+                    break;
+                }
+                case PhoneConstants.LTE_ON_CDMA_FALSE:
+                case PhoneConstants.LTE_ON_CDMA_UNKNOWN:
+                default: {
+                    phone = new CDMAPhone(sContext, sCommandsInterfaces[phoneId],
+                            sPhoneNotifier, phoneId);
+                    break;
+                }
+            }
         }
         return phone;
     }
@@ -302,6 +422,13 @@ public class PhoneFactory {
             } else if (phoneId == SubscriptionManager.DEFAULT_PHONE_INDEX) {
                 return sProxyPhone;
             } else if (phoneId >= 0 && phoneId < TelephonyManager.getDefault().getPhoneCount()) {
+                // MTK SVLTE
+                if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+                    if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID) {
+                        Rlog.d(LOG_TAG, "getPhone: phoneId is for LTE DC phone.");
+                        return sLteDcPhoneProxy.getPhoneById(phoneId);
+                    }
+                }
                 return sProxyPhones[phoneId];
             }
             return null;
@@ -621,5 +748,15 @@ public class PhoneFactory {
             e.printStackTrace();
         }
         pw.flush();
+    }
+
+    // MTK
+
+    public static boolean isEvdoDTSupport() {
+        if (SystemProperties.get(EVDO_DT_SUPPORT).equals("1")) {
+            return true;
+        } else {
+            return false;
+        }
     }
 }
