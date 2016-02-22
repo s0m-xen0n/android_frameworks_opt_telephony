@@ -344,6 +344,12 @@ public class UiccCard {
             return -1;
         }
 
+        // MTK; this NPE guard seems necessary
+        if (mUiccApplications[index] == null) {
+            loge("App index " + index + " is null since there are no applications");
+            return -1;
+        }
+
         if (mUiccApplications[index].getType() != expectedAppType &&
             mUiccApplications[index].getType() != altExpectedAppType) {
             loge("App index " + index + " is invalid since it's not " +
