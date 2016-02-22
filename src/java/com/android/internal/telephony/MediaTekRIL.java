@@ -857,6 +857,10 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_ABORT_SETUP_DATA_CALL: ret = responseVoid(p); break;
             case RIL_REQUEST_PCSCF_DISCOVERY_PCO: ret=responsePcscfDiscovery(p); break;
             case RIL_REQUEST_CLEAR_DATA_BEARER: ret=responseVoid(p); break;
+
+            /// M: SVLTE Remove access feature
+            case RIL_REQUEST_CONFIG_MODEM_STATUS: ret = responseVoid(p); break;
+
             // M: CC33 LTE.
             case RIL_REQUEST_SET_DATA_ON_TO_MD: ret = responseVoid(p); break;
             case RIL_REQUEST_SET_REMOVE_RESTRICT_EUTRAN_MODE: ret = responseVoid(p); break;
