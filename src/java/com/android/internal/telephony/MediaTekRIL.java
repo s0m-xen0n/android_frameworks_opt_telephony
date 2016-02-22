@@ -1343,6 +1343,171 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 }*/
                 break;
 
+            // CDMA
+            case RIL_UNSOL_CDMA_CALL_ACCEPTED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mAcceptedRegistrant != null) {
+                    mAcceptedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_UTK_SESSION_END:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+
+                if (mUtkSessionEndRegistrant != null) {
+                    mUtkSessionEndRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_UTK_PROACTIVE_COMMAND:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mUtkProCmdRegistrant != null) {
+                    mUtkProCmdRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_UTK_EVENT_NOTIFY:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mUtkEventRegistrant != null) {
+                    mUtkEventRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_VIA_GPS_EVENT:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mViaGpsEvent != null) {
+                    mViaGpsEvent.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_VIA_NETWORK_TYPE_CHANGE:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mNetworkTypeChangedRegistrant != null) {
+                    mNetworkTypeChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_VIA_INVALID_SIM_DETECTED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mInvalidSimDetectedRegistrant != null) {
+                    mInvalidSimDetectedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_ABNORMAL_EVENT:
+                if (RILJ_LOGD) unsljLogvRet(response, ret);
+                if (mAbnormalEventRegistrant != null) {
+                    mAbnormalEventRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_CDMA_CARD_TYPE:
+                if (RILJ_LOGD) {
+                    unsljLogvRet(response, ret);
+                }
+                if (mCdmaCardTypeRegistrants != null) {
+                    mCdmaCardTypeValue = ret;
+                    mCdmaCardTypeRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_ENG_MODE_NETWORK_INFO:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mEngModeNetworkInfoRegistrant != null) {
+                    mEngModeNetworkInfoRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_CDMA_PLMN_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                String mccmnc = "";
+                if (ret != null && ret instanceof String[]) {
+                    String s[] = (String[]) ret;
+                    if (s.length >= 2) {
+                        mccmnc = s[0] + s[1];
+                    }
+                }
+                riljLog("mccmnc changed mccmnc=" + mccmnc);
+                mMccMncChangeRegistrants.notifyRegistrants(new AsyncResult(null, mccmnc, null));
+                break;
+
+            case RIL_UNSOL_GMSS_RAT_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogvRet(response, ret);
+                }
+                int[] rat = (int[]) ret;
+                riljLog("Notify RIL_UNSOL_GMSS_RAT_CHANGED result rat = " + rat);
+                if (mGmssRatChangedRegistrant != null) {
+                    mGmssRatChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, rat, null));
+                }
+                break;
+
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_TYPE_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mDataNetworkTypeChangedRegistrant != null) {
+                    mDataNetworkTypeChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_INTER_3GPP_IRAT_STATE_CHANGE:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                mIratStateChangeRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                break;
+
+            case RIL_UNSOL_LTE_BG_SEARCH_STATUS:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mLteBgSearchStatusRegistrant != null) {
+                    mLteBgSearchStatusRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_LTE_EARFCN_INFO:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mLteEarfcnInfoRegistrant != null) {
+                    mLteEarfcnInfoRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
             default:
                 Rlog.i(RILJ_LOG_TAG, "Unprocessed unsolicited known MTK response: " + response);
         }
