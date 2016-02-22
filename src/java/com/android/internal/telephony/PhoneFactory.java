@@ -489,6 +489,18 @@ public class PhoneFactory {
     }
 
     public static int calculatePreferredNetworkType(Context context) {
+        // MTK workaround
+        if (SubscriptionController.getInstance() == null) {
+            Rlog.w(LOG_TAG, "calculatePreferredNetworkType: called very early w/o access to phone ID!");
+            int preferredNetworkType = RILConstants.PREFERRED_NETWORK_MODE;
+            if (TelephonyManager.getLteOnCdmaModeStatic() == PhoneConstants.LTE_ON_CDMA_TRUE) {
+                preferredNetworkType = Phone.NT_MODE_GLOBAL;
+            }
+            int networkType = Settings.Global.getInt(context.getContentResolver(),
+                    Settings.Global.PREFERRED_NETWORK_MODE, preferredNetworkType);
+            return networkType;
+        }
+
         return calculatePreferredNetworkType(context, getDefaultPhoneId());
     }
 
