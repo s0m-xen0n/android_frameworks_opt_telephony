@@ -688,6 +688,12 @@ public class UiccController extends Handler {
             }
         }
 
+        // CM: avoid passing NPE-causing INDEX_SVLTE to registrants
+        if (index == INDEX_SVLTE) {
+            if(DBG) log("rewriting INDEX_SVLTE to mSvlteIndex=" + mSvlteIndex + " before notifying");
+            index = mSvlteIndex;
+        }
+
         if (DBG) log("Notifying IccChangedRegistrants");
         mIccChangedRegistrants.notifyRegistrants(new AsyncResult(null, index, null));
 
@@ -739,6 +745,7 @@ public class UiccController extends Handler {
     }
 
     // MTK
+    // XXX: this code duplication... will refactor as soon as porting is complete
     private synchronized void onGetIccCardStatusDone(AsyncResult ar, Integer index, boolean isUpdate) {
         if (ar.exception != null) {
             Rlog.e(LOG_TAG, "Error getting ICC status. "
@@ -802,6 +809,12 @@ public class UiccController extends Handler {
                 log("update UiccApplication index=" + index);
                 mUiccCards[index].update(mContext, mCis[index] , status, isUpdate);
             }
+        }
+
+        // CM: avoid passing NPE-causing INDEX_SVLTE to registrants
+        if (index == INDEX_SVLTE) {
+            if(DBG) log("rewriting INDEX_SVLTE to mSvlteIndex=" + mSvlteIndex + " before notifying");
+            index = mSvlteIndex;
         }
 
         if (DBG) log("Notifying IccChangedRegistrants");
