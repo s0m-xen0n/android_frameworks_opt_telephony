@@ -54,7 +54,9 @@ import com.android.internal.telephony.uicc.IccCardStatus.PinState;
 import com.android.internal.telephony.uicc.UiccController;
 import com.android.internal.telephony.uicc.RuimRecords;
 
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
 import com.mediatek.internal.telephony.uicc.IccCardProxyEx;
+import com.mediatek.internal.telephony.uicc.SvlteUiccUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -342,6 +344,11 @@ public class IccCardProxy extends Handler implements IccCard {
                         log("handleMessage (EVENT_ICC_CHANGED), come from myself, mPhoneId=" + mPhoneId);
                     }
 
+                    // SVLTE
+                    if (FeatureOptionUtils.isCdmaLteDcSupport() && index == 100) {
+                        index = 0;
+                    }
+
                     updateIccAvailability();
                 }
                 break;
@@ -477,7 +484,18 @@ public class IccCardProxy extends Handler implements IccCard {
             IccRecords newRecords = null;
             if (newCard != null) {
                 state = newCard.getCardState();
-                newApp = newCard.getApplication(mCurrentAppType);
+                // SVLTE
+                if (SvlteUiccUtils.getInstance()
+                        .isNeedToAdjustAppType(mCurrentAppType)) {
+                    int family = SvlteUiccUtils.getInstance()
+                            .adjustAppType(newCard, mCurrentAppType);
+                    newApp = newCard.getApplication(family);
+                } else {
+                    newApp = newCard.getApplication(mCurrentAppType);
+                }
+                if (DBG) {
+                    log("mCurrentAppType: " + mCurrentAppType);
+                }
                 if (newApp != null) {
                     newRecords = newApp.getIccRecords();
                 }
