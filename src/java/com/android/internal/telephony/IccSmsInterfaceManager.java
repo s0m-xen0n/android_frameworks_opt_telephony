@@ -197,7 +197,15 @@ public class IccSmsInterfaceManager {
         }
     }
 
-    protected void updatePhoneObject(PhoneBase phone) {
+    // MTK: public needed for cdma
+    /**
+     * For C2K IRAT to update PhoneOject while enter/exit LTE data only.
+     * While change the LTE data mode the SVLTE phone will switch the
+     * GSMPhone and CDMAPhone.
+     *
+     * @param phone The new Phone object to use.
+     */
+    public void updatePhoneObject(PhoneBase phone) {
         mPhone = phone;
         mDispatcher.updatePhoneObject(phone);
     }

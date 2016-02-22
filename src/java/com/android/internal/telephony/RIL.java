@@ -80,6 +80,8 @@ import com.android.internal.telephony.dataconnection.DataProfile;
 import com.android.internal.telephony.TelephonyDevController;
 import com.android.internal.telephony.HardwareConfig;
 
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.FileDescriptor;
@@ -331,6 +333,18 @@ public class RIL extends BaseCommands implements CommandsInterface {
             }
         }
     };
+
+    // MTK CDMA
+    protected static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    protected static final int CARD_TYPE_SIM  = 1;
+    protected static final int CARD_TYPE_USIM = 2;
+    protected static final int CARD_TYPE_CSIM = 4;
+    protected static final int CARD_TYPE_RUIM = 8;
 
     class RILSender extends Handler implements Runnable {
         public RILSender(Looper looper) {
@@ -3408,6 +3422,11 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 setCellInfoListRate(Integer.MAX_VALUE, null);
                 notifyRegistrantsRilConnectionChanged(((int[])ret)[0]);
                 sendScreenState(isScreenOn);
+
+                // SVLTE remote SIM Access
+                if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+                    configModemRemoteSimAccess();
+                }
                 break;
             }
             case RIL_UNSOL_CELL_INFO_LIST: {
@@ -5293,14 +5312,6 @@ public class RIL extends BaseCommands implements CommandsInterface {
         send(rr);
     }
 
-    public void setResumeRegistration(int sessionId, Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RESUME_REGISTRATION, response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(sessionId);
-        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        send(rr);
-    }
-
     public void queryModemType(Message response) {
         RILRequest rr = RILRequest.obtain(RIL_REQUEST_QUERY_MODEM_TYPE, response);
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
@@ -5409,229 +5420,6 @@ public class RIL extends BaseCommands implements CommandsInterface {
         send(rr);
     }
 
-    /* M: C2K part start */
-    @Override
-    public void setViaTRM(int mode, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_VIA_TRM, null);
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(mode);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void getNitzTime(Message result) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_GET_NITZ_TIME, result);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void requestSwitchHPF(boolean enableHPF, Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_SWITCH_HPF, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + enableHPF);
-        }
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(enableHPF ? 1 : 0);
-
-        send(rr);
-    }
-
-    @Override
-    public void setAvoidSYS(boolean avoidSYS, Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_SET_AVOID_SYS, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + avoidSYS);
-        }
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(avoidSYS ? 1 : 0);
-
-        send(rr);
-    }
-
-    @Override
-    public void getAvoidSYSList(Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_QUERY_AVOID_SYS, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void queryCDMANetworkInfo(Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_QUERY_CDMA_NETWORK_INFO, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void setOplmn(String oplmnInfo, Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SEND_OPLMN, response);
-        rr.mParcel.writeString(oplmnInfo);
-        riljLog("sendOplmn, OPLMN is" + oplmnInfo);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void getOplmnVersion(Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_OPLMN_VERSION, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void requestAGPSTcpConnected(int connected, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_TCP_CONNIND, result);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(connected);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + connected);
-        }
-        send(rr);
-    }
-
-    @Override
-    public void requestAGPSSetMpcIpPort(String ip, String port, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_SET_MPC_IPPORT, result);
-        rr.mParcel.writeInt(2);
-        rr.mParcel.writeString(ip);
-        rr.mParcel.writeString(port);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
-                    + " : " + ip + ", " + port);
-        }
-        send(rr);
-    }
-
-    @Override
-    public void requestAGPSGetMpcIpPort(Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_GET_MPC_IPPORT, result);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void requestSetEtsDev(int dev, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_ETS_DEV, result);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(dev);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + dev);
-        }
-        send(rr);
-    }
-
-    @Override
-    public void setArsiReportThreshold(int threshold, Message response) {
-        RILRequest rr = RILRequest.obtain(
-                RILConstants.RIL_REQUEST_SET_ARSI_THRESHOLD, response);
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(threshold);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " : " + threshold);
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void queryCDMASmsAndPBStatus(Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_QUERY_SMS_AND_PHONEBOOK_STATUS, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void queryCDMANetWorkRegistrationState(Message response) {
-        RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_QUERY_NETWORK_REGISTRATION, response);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-
-        send(rr);
-    }
-
-    @Override
-    public void setMeid(String meid, Message response) {
-        RILRequest rr
-               = RILRequest.obtain(RIL_REQUEST_SET_MEID, response);
-
-       rr.mParcel.writeString(meid);
-       if (RILJ_LOGD) {
-           riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + meid);
-       }
-
-       send(rr);
-   }
-
-    @Override
-    public void setMdnNumber(String mdn, Message response) {
-         RILRequest rr
-                = RILRequest.obtain(RIL_REQUEST_WRITE_MDN, response);
-
-        rr.mParcel.writeString(mdn);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + mdn);
-        }
-
-        send(rr);
-    }
-
-    private Object responseGetNitzTime(Parcel p) {
-        Object[] result = new Object[2];
-        String response;
-
-        response = p.readString();
-        long nitzReceiveTime = p.readLong();
-        result[0] = response;
-        result[1] = Long.valueOf(nitzReceiveTime);
-
-        return result;
-    }
-
     /// M: UTK started @{
     @Override
     public void getUtkLocalInfo(Message result) {
@@ -5699,152 +5487,54 @@ public class RIL extends BaseCommands implements CommandsInterface {
     }
     /// UTK end @}
 
-    ///M: [C2K][SVLTE] Removt SIM access feature @{
-    @Override
-    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CONFIG_MODEM_STATUS, result);
-
-        // count ints
-        rr.mParcel.writeInt(2);
-        rr.mParcel.writeInt(modemStatus);
-        rr.mParcel.writeInt(remoteSimProtocol);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
-                    + " " + modemStatus + ", " + remoteSimProtocol);
+    // M: [C2K] SVLTE Remote SIM Access start.
+    private int getFullCardType() {
+        String cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+        Rlog.d(RILJ_LOG_TAG, "getFullCardType=" + cardType);
+        String appType[] = cardType.split(",");
+        int fullType = 0;
+        for (int i = 0; i < appType.length; i++) {
+            if ("USIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_USIM;
+            } else if ("SIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_SIM;
+            } else if ("CSIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_CSIM;
+            } else if ("RUIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_RUIM;
+            }
         }
-
-        send(rr);
+        Rlog.d(RILJ_LOG_TAG, "fullType=" + fullType);
+        return fullType;
     }
-    /// @}
 
-    /// M: [C2K][SVLTE] C2K SVLTE CDMA RAT control @{
-    @Override
-    public void configIratMode(int iratMode, Message result) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CONFIG_IRAT_MODE, result);
+    private void configModemRemoteSimAccess() {
+        int fullType = getFullCardType();
 
-        // count ints
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(iratMode);
-
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
-                    + " " + iratMode + ", " + iratMode);
+        if (fullType == 0) {
+            // no card
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: no card");
+            configModemStatus(1, 1, null);
+        } else if ((fullType & CARD_TYPE_RUIM) == 0 && (fullType & CARD_TYPE_CSIM) == 0) {
+            // GSM only
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: GSM only");
+            configModemStatus(0, 0, null);
+        } else if (((fullType & CARD_TYPE_SIM) == 0 && (fullType & CARD_TYPE_USIM) == 0) ||
+                ((fullType & CARD_TYPE_SIM) == CARD_TYPE_SIM && (fullType & CARD_TYPE_RUIM) == CARD_TYPE_RUIM)) {
+            // CDMA only
+            // 1. no SIM and no USIM
+            // 2. RUIM and SIM (CT 3G card)
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: CDMA only");
+            configModemStatus(1, 1, null);
+        } else if ((fullType & CARD_TYPE_USIM) == CARD_TYPE_USIM && (fullType & CARD_TYPE_CSIM) == CARD_TYPE_CSIM) {
+            // CT LTE
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: CT LTE");
+            configModemStatus(2, 1, null);
+        } else {
+            //other case, may not happen!
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: other case, may not happen!");
         }
-
-        send(rr);
-    }
-    /// @}
-
-    ///M: [C2K][IRAT] code start @{
-    /*
-    @Override
-    public void confirmIratChange(int apDecision, Message response) {
-        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_CONFIRM_INTER_3GPP_IRAT_CHANGE,
-                response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(apDecision);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + apDecision);
-        }
-        send(rr);
     }
 
-    @Override
-    public void requestSetPsActiveSlot(int psSlot, Message response) {
-        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_ACTIVE_PS_SLOT, response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(psSlot);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + psSlot);
-        }
-        send(rr);
-    }
-
-    @Override
-    public void syncNotifyDataCallList(AsyncResult dcList) {
-        riljLog("[C2K_IRAT_RIL] notify data call list!");
-        mDataNetworkStateRegistrants.notifyRegistrants(dcList);
-    }
-
-    private Object responseIratStateChange(Parcel p) {
-        MdIratInfo pdnIratInfo = new MdIratInfo();
-        pdnIratInfo.sourceRat = p.readInt();
-        pdnIratInfo.targetRat = p.readInt();
-        pdnIratInfo.action = p.readInt();
-        pdnIratInfo.type = IratType.getIratTypeFromInt(p.readInt());
-        riljLog("[C2K_IRAT_RIL]responseIratStateChange: pdnIratInfo = " + pdnIratInfo);
-        return pdnIratInfo;
-    }
-    */
-    ///@} [C2K] IRAT code end
-
-    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
-    /*
-    @Override
-    public void setSvlteRatMode(int preSvlteMode, int svlteMode, int preRoamingMode,
-            int roamingMode, Message response) {
-        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_SVLTE_RAT_MODE, response);
-        rr.mParcel.writeInt(4);
-        rr.mParcel.writeInt(preSvlteMode);
-        rr.mParcel.writeInt(svlteMode);
-        rr.mParcel.writeInt(preRoamingMode);
-        rr.mParcel.writeInt(roamingMode);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) +
-                    " svlteMode: " + svlteMode);
-        }
-        send(rr);
-    }
-    */
-    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
-
-    /// M: [C2K][IR] Support SVLTE IR feature. @{
-    /*
-    @Override
-    public void setRegistrationSuspendEnabled(int enabled, Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_REG_SUSPEND_ENABLED, response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(enabled);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void setResumeRegistration(int sessionId, Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RESUME_REGISTRATION, response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(sessionId);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-
-    @Override
-    public void setCdmaRegistrationSuspendEnabled(boolean enabled, Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_REG_SUSPEND_ENABLED_CDMA, response);
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(enabled ? 1 : 0);
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " enable=" + enabled);
-        }
-        send(rr);
-    }
-
-    @Override
-    public void setResumeCdmaRegistration(Message response) {
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RESUME_REGISTRATION_CDMA, response);
-        mVoiceNetworkStateRegistrants.notifyRegistrants(new AsyncResult(null, null, null));
-        if (RILJ_LOGD) {
-            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-        }
-        send(rr);
-    }
-    */
-    /// M: [C2K][IR] Support SVLTE IR feature. @}
-
-    /* M: C2K part end */
+    // M: [C2K] SVLTE Remote SIM Access end.
 }

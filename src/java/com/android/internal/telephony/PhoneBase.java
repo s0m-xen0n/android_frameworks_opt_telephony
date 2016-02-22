@@ -186,15 +186,31 @@ public abstract class PhoneBase extends Handler implements Phone {
     protected static final int EVENT_LAST                   = EVENT_PHONE_RAT_FAMILY_CHANGED_NOTIFY;
 
     // MTK again - wtf
+    // special cmd from battery
+    protected static final int EVENT_CHARGING_STOP                  = 43;
+    protected static final int EVENT_ABNORMAL_EVENT                 = 44;
+    protected static final int EVENT_SET_BAND_MODE_DONE             = 45;
+
     /// M: c2k modify, event constants. @{
-    protected static final int EVENT_SET_MEID_DONE                  = 101;
-    protected static final int EVENT_RUIM_READY                     = 102;
+    protected static final int EVENT_QUERY_UIM_INSERTED_STATUS_DONE = 100;
+    protected static final int EVENT_GET_UIM_INSERT_STATUS_RETRY    = 101;
+    protected static final int EVENT_SET_MEID_DONE                  = 102;
+    protected static final int EVENT_CDMA_MCC_MNC_CHANGED           = 103;
+    protected static final int EVENT_RUIM_READY                     = 205;
     /// @}
+
+    protected static final int EVENT_IMS_UT_DONE                    = 2000;
+    protected static final int EVENT_IMS_UT_CSFB                    = 2001;
 
     /** M: for suspend data during plmn list */
     protected static final int EVENT_GET_AVAILABLE_NETWORK_DONE = 500520;
     protected static final int EVENT_DC_SWITCH_STATE_CHANGE = 500521;
     protected static final int EVENT_GET_AVAILABLE_NETWORK = 500522;
+
+    /// M: SS OP01 Ut @{
+    protected static final int EVENT_GET_CALL_FORWARD_TIME_SLOT_DONE = 201;
+    protected static final int EVENT_SET_CALL_FORWARD_TIME_SLOT_DONE = 202;
+    /// @}
 
     // For shared prefs.
     private static final String GSM_ROAMING_LIST_OVERRIDE_PREFIX = "gsm_roaming_list_";
@@ -369,6 +385,12 @@ public abstract class PhoneBase extends Handler implements Phone {
 
     // MTK
     protected final RegistrantList mPhoneRatFamilyChangedRegistrants
+            = new RegistrantList();
+
+    protected final RegistrantList mCdmaCallAcceptedRegistrants
+            = new RegistrantList();
+
+    protected final RegistrantList mSvlteServiceStateRegistrants
             = new RegistrantList();
 
     protected Looper mLooper; /* to insure registrants are in correct thread*/
@@ -2374,6 +2396,8 @@ public abstract class PhoneBase extends Handler implements Phone {
 
     // MTK additions
 
+    public void hangupAll() throws CallStateException {}
+
     @Override
     public void setPhoneRatFamily(int ratFamily, Message response) {
         mCi.setPhoneRatFamily(ratFamily, response);
@@ -2396,6 +2420,159 @@ public abstract class PhoneBase extends Handler implements Phone {
     public void unregisterForPhoneRatFamilyChanged(Handler h) {
         mPhoneRatFamilyChangedRegistrants.remove(h);
         mCi.unregisterForPhoneRatFamilyChanged(this);
+    }
+
+    // MTK CDMA
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+    }
+
+    /**
+     * Get the version of OPLMN.
+     * @param response the responding message
+     */
+    public void getOplmnVersion(Message response) {
+        mCi.getOplmnVersion(response);
+    }
+
+    /**
+     * M: Register for VIA CDMA modem suspend register network URC, add dummy
+     * interface to separate from default CDMA implement.
+     *
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    public void registerForMccMncChange(Handler h, int what, Object obj) {
+    }
+
+    /**
+     * M: Unregister for VIA CDMA modem suspend register network URC, add dummy
+     * interface to separate from default CDMA implement.
+     *
+     * @param h the handler which listen the changed.
+     */
+    public void unregisterForMccMncChange(Handler h) {
+    }
+
+    /**
+     * M: Resume VIA CDMA modem register network, add dummy interface to
+     * separate from legacy CDMA implement.
+     *
+     * @param result the responding message.
+     */
+    public void resumeCdmaRegister(Message result) {
+    }
+
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
+    }
+
+    @Override
+    public void registerForEngModeNetworkInfo(Handler h, int what, Object obj) {
+        mCi.registerForEngModeNetworkInfo(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForEngModeNetworkInfo(Handler h) {
+        mCi.unregisterForEngModeNetworkInfo(h);
+    }
+
+    /// For SVLTE to udpate Phone Id
+    @Override
+    public void setPhoneId(int phoneId) {
+        mPhoneId = phoneId;
+    }
+
+    /**
+     * Register for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    public void registerForCdmaCallAccepted(Handler h, int what, Object obj) {
+        checkCorrectThread(h);
+        mCdmaCallAcceptedRegistrants.addUnique(h, what, obj);
+    }
+
+    /**
+     * Unregister for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     */
+    public void unregisterForCdmaCallAccepted(Handler h) {
+        mCdmaCallAcceptedRegistrants.remove(h);
+    }
+
+    /**
+     * Notify CDMA call really be accepted.
+     */
+    public void notifyCdmaCallAccepted() {
+        AsyncResult ar = new AsyncResult(null, this, null);
+        mCdmaCallAcceptedRegistrants.notifyRegistrants(ar);
+    }
+
+    /**
+     * Notify the service state change for the phone state listener.
+     * @param ss The ServiceState of phone.
+     */
+    protected void notifyServiceStateChangedPForSvlte(ServiceState ss) {
+        mNotifier.notifySvlteServiceStateChanged(this, ss);
+
+        if ((ss.getState() != ServiceState.STATE_POWER_OFF)
+                && (SystemProperties.get("ril.charging_stop_enable", "0")
+                        .equals("1"))) {
+
+            // send special AT cmd to MD
+            sendMessageDelayed(obtainMessage(EVENT_CHARGING_STOP, 0, 0), 60000);
+        }
+    }
+
+    /**
+     * Notify the service state change for service state registrants.
+     * @param ss The ServiceState of phone.
+     */
+    public void notifyServiceStateChangedPForRegistrants(ServiceState ss) {
+        AsyncResult ar = new AsyncResult(null, ss, null);
+        mServiceStateRegistrants.notifyRegistrants(ar);
+    }
+
+    // Inherited documentation suffices.
+    @Override
+    public void registerForSvlteServiceStateChanged(
+            Handler h, int what, Object obj) {
+        checkCorrectThread(h);
+
+        mSvlteServiceStateRegistrants.add(h, what, obj);
+    }
+
+    // Inherited documentation suffices.
+    @Override
+    public void unregisterForSvlteServiceStateChanged(Handler h) {
+        mSvlteServiceStateRegistrants.remove(h);
+    }
+
+    /**
+     * Notify the svlte service state change for service state registrants.
+     * @param ss The ServiceState of phone.
+     */
+    public void notifySvlteServiceStateChangedPForRegistrants(ServiceState ss) {
+        AsyncResult ar = new AsyncResult(null, ss, null);
+        mSvlteServiceStateRegistrants.notifyRegistrants(ar);
     }
 
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {

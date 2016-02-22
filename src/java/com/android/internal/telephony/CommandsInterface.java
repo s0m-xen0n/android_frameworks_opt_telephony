@@ -24,6 +24,7 @@ import com.android.internal.telephony.dataconnection.DataProfile;
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
 import com.android.internal.telephony.uicc.IccCardStatus;
 
+import android.os.AsyncResult;
 import android.os.Message;
 import android.os.Handler;
 
@@ -2048,6 +2049,17 @@ public interface CommandsInterface {
 
     // MTK additions
 
+    //MTK-START [mtk06800] modem power on/off
+    void setModemPower(boolean power, Message response);
+    //MTK-END [mtk06800] modem power on/off
+
+    /**
+     *  ar.exception carries exception on failure
+     *  ar.userObject contains the orignal value of result.obj
+     *  ar.result is null on success and failure
+     */
+    public void hangupAll(Message result);
+
     //MTK-START multiple application support
     /**
      * M: Open application in the UICC
@@ -2194,6 +2206,9 @@ public interface CommandsInterface {
      */
     void unregisterForCommonSlotNoChanged(Handler h);
 
+    void registerSetDataAllowed(Handler h, int what, Object obj);
+    void unregisterSetDataAllowed(Handler h);
+
     void registerForPsNetworkStateChanged(Handler h, int what, Object obj);
     void unregisterForPsNetworkStateChanged(Handler h);
 
@@ -2229,7 +2244,6 @@ public interface CommandsInterface {
     void unSetOnPlmnChangeNotification(Handler h);
     void setOnRegistrationSuspended(Handler h, int what, Object obj);
     void unSetOnRegistrationSuspended(Handler h);
-    void setResumeRegistration(int sessionId, Message response);
     void storeModemType(int modemType, Message response);
     void queryModemType(Message response);
 
@@ -2588,4 +2602,215 @@ public interface CommandsInterface {
      *
      */
     public int getDisplayState();
+
+    /* M: IMS ViLTE feature part start */
+    /**
+     * Dial video call.
+     * @param address dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param result the command result.
+     */
+    void vtDial(String address, int clirMode, Message result);
+
+    /**
+     * Dial video call.
+     * @param address dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param uusInfo User-User Signaling Information
+     * @param result the command result.
+     */
+    void vtDial(String address, int clirMode, UUSInfo uusInfo, Message result);
+    /* M: IMS ViLTE feature part end */
+
+    /* M: IMS VoLTE conference dial feature start*/
+    /**
+     * Dial conference call.
+     * @param participants participants' dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param isVideoCall indicate the call is belong to video call or voice call.
+     * @param result the command result.
+     */
+    void conferenceDial(String[] participants, int clirMode, boolean isVideoCall, Message result);
+    /* IMS VoLTE conference dial feature end*/
+
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+    /**
+     * Register for GMSS RAT.
+     * When boot the phone,AP can use this informaiton decide PS' type(LTE or C2K).
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForGmssRatChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregister GMSS RAT get GMSS RAT.
+     * When boot the phone,AP can use this informaiton decide PS' type(LTE or C2K).
+     * @param h Handler for notification message.
+     */
+    void unregisterForGmssRatChanged(Handler h);
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+
+    /// M: [C2K] for ps type changed. @{
+    /**
+     * Register for ps type changed.
+     * @param h Handler for ps type change messages.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForDataNetworkTypeChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregister for ps type changed.
+     * @param h Handler for ps type change messages.
+     */
+    void unregisterForDataNetworkTypeChanged(Handler h);
+    /// @}
+
+    /// [C2K][IRAT] start @{
+    /**
+     * M: Fires on any change in inter-3GPP IRAT status change.
+     * @param h Handler for IRAT status change messages.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForIratStateChanged(Handler h, int what, Object obj);
+
+    /**
+     * M: Unregister for inter-3GPP IRAT status change event.
+     * @param h Handler for IRAT status change messages
+     */
+    void unregisterForIratStateChanged(Handler h);
+
+    /**
+     * M: Confirm inter-3GPP IRAT change, MD will perform IRAT process after
+     * receive this command, AP need to make sure to suspend all PS requests
+     * before call this function.
+     * @param apDecision The decision of AP, need to be 1(accept) currently.
+     * @param response A callback message with the String response in the obj field
+     */
+    void confirmIratChange(int apDecision, Message response);
+
+    /**
+     * M: Set PS active slot for Gemini LTE dual connection project, send
+     * AT+EACTS=slotId to MD, the request can only send by main protocol.
+     * @param psSlot Slot to be used for data connection.
+     * @param response A callback message with the String response in the obj field
+     */
+    void requestSetPsActiveSlot(int psSlot, Message response);
+
+    /**
+     * Sync notify data call list after IRAT finished.
+     * @param dcList Data call list.
+     */
+    void syncNotifyDataCallList(AsyncResult dcList);
+    /// }@
+
+    // M: [C2K] AP IRAT start.
+    //RIL_REQUEST_TRIGGER_LTE_BG_SEARCH - AT+ECARFUN=int[], RILD AT+EBGS
+    /**
+     * Trigger LTE BG search.
+     * @param numOfArfcn number of arfcns
+     * @param arfcn arfcns
+     * @param response callback message.
+     */
+    void requestTriggerLteBgSearch(int numOfArfcn, int[] arfcn, Message response);
+
+    // RIL_UNSOL_LTE_BG_SEARCH_STATUS - ECAMPON: status
+    /**
+     * Register for LTE BG search status.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForLteBgSearchStatus(Handler h, int what, Object obj);
+
+    /**
+     * Unregister for LTE BG search status.
+     * @param h Handler for notification message.
+     */
+    void unregisterForLteBgSearchStatus(Handler h);
+
+    //RIL_REQUEST_SET_LTE_EARFCN_ENABLED - AT+ELTEARFCN=int
+    /**
+     * Enable/Disable LTE EARFCN.
+     * @param enable true, to enable
+     * @param response callback message.
+     */
+    void requestSetLteEarfcnEnabled(boolean enable, Message response);
+
+    //RIL_UNSOL_LTE_EARFCN_INFO - ELTEARFCN=int[]
+    /**
+     * Register for LTE EARFCN information.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForLteEarfcnInfo(Handler h, int what, Object obj);
+
+    /**
+     * Unregister for LTE EARFCN information.
+     * @param h Handler for notification message.
+     */
+    void unregisterForLteEarfcnInfo(Handler h);
+    // M: [C2K] AP IRAT end.
+
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
+    /**
+     * M: Request to set the SVLTE Mode (SVLTE_4G or SVLTE_3G or LTE_TDD_DATA_ONLY).
+     *
+     * @param preSvlteMode The previous rat mode.
+     * @param svlteMode The rat mode.
+     * @param preRoamingMode The previous roaming mode.
+     * @param roamingMode The roaming mode.
+     * @param response A callback message with the String response in the obj field.
+     */
+    void setSvlteRatMode(int preSvlteMode, int svlteMode, int preRoamingMode, int roamingMode,
+            Message response);
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @{
+
+    /**
+     * Set GSM modem to suspend network registration.
+     * @param enabled True to pause and false to resume.
+     * @param response the responding message.
+     */
+    void setRegistrationSuspendEnabled(int enabled, Message response);
+
+    /**
+     * Request GSM modem to resume network registration.
+     * @param sessionId the session index.
+     * @param response the responding message.
+     */
+    void setResumeRegistration(int sessionId, Message response);
+
+    /**
+     * Set GSM modem to suspend network registration.
+     * @param enabled True to pause and false to resume.
+     * @param response the responding message.
+     */
+    void setCdmaRegistrationSuspendEnabled(boolean enabled, Message response);
+
+    /**
+     * Request C2K modem to resume network registration.
+     * @param response the responding message.
+     */
+    void setResumeCdmaRegistration(Message response);
+
+    /**
+     * Register for mcc and mnc change.
+     * @param h Handler for notification message.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForMccMncChange(Handler h, int what, Object obj);
+
+    /**
+     * Unregister for mcc and mnc change.
+     * @param h Handler for notification message.
+     */
+    void unregisterForMccMncChange(Handler h);
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @}
 }

@@ -359,7 +359,8 @@ public final class BearerData {
     public ArrayList<CdmaSmsCbProgramResults> serviceCategoryProgramResults;
 
 
-    private static class CodingException extends Exception {
+    // MTK
+    public static class CodingException extends Exception {
         public CodingException(String s) {
             super(s);
         }

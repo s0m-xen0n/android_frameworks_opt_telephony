@@ -57,12 +57,13 @@ import com.android.internal.telephony.dataconnection.DctController;
 public class PhoneProxy extends Handler implements Phone {
     public final static Object lockForRadioTechnologyChange = new Object();
 
-    private Phone mActivePhone;
-    private CommandsInterface mCommandsInterface;
-    private IccSmsInterfaceManager mIccSmsInterfaceManager;
-    private IccPhoneBookInterfaceManagerProxy mIccPhoneBookInterfaceManagerProxy;
-    private PhoneSubInfoProxy mPhoneSubInfoProxy;
-    private IccCardProxy mIccCardProxy;
+    // needed by MTK SVLTE
+    protected Phone mActivePhone;
+    protected CommandsInterface mCommandsInterface;
+    protected IccSmsInterfaceManager mIccSmsInterfaceManager;
+    protected IccPhoneBookInterfaceManagerProxy mIccPhoneBookInterfaceManagerProxy;
+    protected PhoneSubInfoProxy mPhoneSubInfoProxy;
+    protected IccCardProxy mIccCardProxy;
 
     private boolean mResetModemOnRadioTechnologyChange = false;
 
@@ -1592,6 +1593,10 @@ public class PhoneProxy extends Handler implements Phone {
 
     // MTK additions
 
+    public void hangupAll() throws CallStateException {
+        mActivePhone.hangupAll();
+    }
+
     @Override
     public void setPhoneRatFamily(int ratFamily, Message response) {
         mActivePhone.setPhoneRatFamily(ratFamily, response);
@@ -1610,6 +1615,68 @@ public class PhoneProxy extends Handler implements Phone {
     @Override
     public void unregisterForPhoneRatFamilyChanged(Handler h) {
         mActivePhone.unregisterForPhoneRatFamilyChanged(h);
+    }
+
+    // MTK CDMA
+
+    @Override
+    public void registerForEngModeNetworkInfo(Handler h, int what, Object obj) {
+        mActivePhone.registerForEngModeNetworkInfo(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForEngModeNetworkInfo(Handler h) {
+        mActivePhone.unregisterForEngModeNetworkInfo(h);
+    }
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+        mActivePhone.requestSwitchHPF(enableHPF, response);
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+        mActivePhone.setAvoidSYS(avoidSYS, response);
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+        mActivePhone.getAvoidSYSList(response);
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+        mActivePhone.queryCDMANetworkInfo(response);
+    }
+
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
+        mCommandsInterface.configModemStatus(modemStatus, remoteSimProtocol, result);
+    }
+
+    @Override
+    public void setPhoneId(int phoneId) {
+        mActivePhone.setPhoneId(phoneId);
+    }
+
+    @Override
+    public void registerForCdmaCallAccepted(Handler h, int what, Object obj) {
+        mActivePhone.registerForCdmaCallAccepted(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForCdmaCallAccepted(Handler h) {
+        mActivePhone.unregisterForCdmaCallAccepted(h);
+    }
+
+    @Override
+    public void registerForSvlteServiceStateChanged(Handler h, int what, Object obj) {
+        mActivePhone.registerForServiceStateChanged(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForSvlteServiceStateChanged(Handler h) {
+        mActivePhone.unregisterForServiceStateChanged(h);
     }
 
 }

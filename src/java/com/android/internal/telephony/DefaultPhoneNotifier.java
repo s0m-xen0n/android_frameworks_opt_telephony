@@ -37,6 +37,8 @@ import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.ITelephonyRegistry;
 import com.android.internal.telephony.PhoneConstants;
 
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteIratUtils;
+
 import java.util.List;
 
 /**
@@ -471,5 +473,33 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
 
     private void log(String s) {
         Rlog.d(LOG_TAG, s);
+    }
+
+    // MTK
+
+    // MTK SVLTE
+
+    /**
+     * Notify the Service state change for svlte.
+     * @param sender The phone to notify service state change
+     * @param svlteServiceState The svlte service state will be notified.
+     */
+    @Override
+    public void notifySvlteServiceStateChanged(Phone sender,
+            ServiceState svlteServiceState) {
+        int phoneId = sender.getPhoneId();
+        int subId = sender.getSubId();
+
+        log("notifySvlteServiceStateChanged: mRegistry="
+                + mRegistry + " ss=" + svlteServiceState + " sender=" + sender
+                + " phoneId=" + phoneId + " subId=" + subId);
+        try {
+            if (mRegistry != null) {
+                mRegistry.notifyServiceStateForPhoneId(phoneId, subId,
+                        svlteServiceState);
+            }
+        } catch (RemoteException ex) {
+            // system process is dead
+        }
     }
 }

@@ -18,6 +18,7 @@ package com.android.internal.telephony;
 
 import android.telephony.CellInfo;
 import android.telephony.DataConnectionRealTimeInfo;
+import android.telephony.ServiceState;
 import android.telephony.VoLteServiceState;
 
 import java.util.List;
@@ -63,4 +64,16 @@ public interface PhoneNotifier {
     public void notifyVoLteServiceStateChanged(Phone sender, VoLteServiceState lteState);
 
     public void notifyOemHookRawEventForSubscriber(int subId, byte[] rawData);
+
+    // MTK
+
+    // MTK SVLTE
+
+    /**
+     * Notify the Service state change for svlte.
+     * @param sender The phone to notify service state change
+     * @param svlteServiceState The svlte service state will be notified.
+     */
+    public void notifySvlteServiceStateChanged(Phone sender,
+            ServiceState svlteServiceState);
 }

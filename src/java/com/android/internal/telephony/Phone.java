@@ -79,6 +79,13 @@ public interface Phone {
     static final String FEATURE_ENABLE_CBS = "enableCBS";
     static final String FEATURE_ENABLE_EMERGENCY = "enableEmergency";
 
+    // MTK
+    static final String FEATURE_ENABLE_DM = "enableDM";
+    static final String FEATURE_ENABLE_WAP = "enableWAP";
+    static final String FEATURE_ENABLE_NET = "enableNET";
+    static final String FEATURE_ENABLE_CMMAIL = "enableCMMAIL";
+    static final String FEATURE_ENABLE_RCSE = "enableRCSE";
+
     /**
      * Optional reasons for disconnect and connect
      */
@@ -111,6 +118,11 @@ public interface Phone {
     static final String REASON_DATA_SPECIFIC_DISABLED = "specificDisabled";
     static final String REASON_SIM_NOT_READY = "simNotReady";
     static final String REASON_IWLAN_AVAILABLE = "iwlanAvailable";
+
+    // MTK
+    static final String REASON_CDMA_IRAT_STARTED = "CdmaIratStarted";
+    static final String REASON_CDMA_IRAT_ENDED = "CdmaIratEnded";
+    static final String REASON_CDMA_FALLBACK_HAPPENED = "CdmaFallbackHappened";
 
     // Used for band mode selection methods
     static final int BM_UNSPECIFIED = 0; // selected by baseband automatically
@@ -2099,4 +2111,101 @@ public interface Phone {
      * @param h Handler to be removed from the registrant list.
      */
     public void unregisterForPhoneRatFamilyChanged(Handler h);
+
+    /**
+     * used to release all connections in the MS,
+     * release all connections with one reqeust together, not seperated.
+     * @internal
+     */
+    void hangupAll() throws CallStateException;
+
+    /// M: c2k modify, phone interface. @{
+
+    /**
+     * Request to switch HPF.
+     * @param enableHPF if enable the HPF
+     * @param response the responding message
+     */
+    void requestSwitchHPF(boolean enableHPF, Message response);
+    /**
+     * Set CDMA avoid list.
+     * @param avoidSYS the avoid list enabled
+     * @param response the responding message
+     */
+    void setAvoidSYS(boolean avoidSYS, Message response);
+    /**
+     * Get CDMA avoid list.
+     * @param response the responding message
+     */
+    void getAvoidSYSList(Message response);
+    /**
+     * Query CDMA network infomation.
+     * @param response the responding message
+     */
+    void queryCDMANetworkInfo(Message response);
+
+    /// @}
+
+    /// M: [C2K][SVLTE] Support modem remote SIM access.
+    /**
+     * Configure the modem status.
+     * @param modemStatus the modem status parameter.
+     * @param remoteSimProtocol the remote SIM protocal.
+     * @param result the responding message.
+     */
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result);
+
+    /// M: [C2K] for eng mode start
+    /**
+     * M: Rregister on network information for eng mode.
+     * @param h Handler for network information messages.
+     * @param what User-defined message code.
+     * @param obj User object.
+     */
+    void registerForEngModeNetworkInfo(Handler h, int what, Object obj);
+
+    /**
+     * M: Unrregister on network information for eng mode.
+     * @param h Handler for network information messages.
+     */
+    void unregisterForEngModeNetworkInfo(Handler h);
+    /// M: [C2K] for eng mode end
+
+    /**
+     * M: For SVLTE to update phone Id.
+     * @param phoneId The new phone Id.
+     */
+    void setPhoneId(int phoneId);
+
+    /**
+     * Register for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    void registerForCdmaCallAccepted(Handler h, int what, Object obj);
+
+    /**
+     * Unregister for CDMA call really be accepted.
+     *
+     * @param h the handler which listen the changed.
+     */
+    void unregisterForCdmaCallAccepted(Handler h);
+    ///M: Add for SVLTE. @{
+    /**
+     * Register for SVLTE ServiceState changed.
+     * @param h the handler which listen the changed.
+     * @param what the message's what value.
+     * @param obj the message's obj value.
+     */
+    void registerForSvlteServiceStateChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregisters for SVLTE ServiceStateChange notification.
+     *
+     * @param h the handler which listen the changed.
+     */
+    void unregisterForSvlteServiceStateChanged(Handler h);
+    ///@}
 }

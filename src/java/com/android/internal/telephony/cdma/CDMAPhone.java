@@ -39,6 +39,7 @@ import android.provider.Telephony;
 import android.telephony.CellLocation;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.ServiceState;
+import android.telephony.SignalStrength;
 import android.telephony.SubscriptionManager;
 import android.telephony.cdma.CdmaCellLocation;
 import android.text.TextUtils;
@@ -76,6 +77,14 @@ import com.android.internal.telephony.uicc.RuimRecords;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
+
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+import com.mediatek.internal.telephony.cdma.IGpsProcess;
+import com.mediatek.internal.telephony.cdma.IUtkService;
+import com.mediatek.internal.telephony.cdma.IPlusCodeUtils;
+import com.mediatek.internal.telephony.cdma.ViaPolicyManager;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteIratUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -135,6 +144,13 @@ public class CDMAPhone extends PhoneBase {
     // string to define how the carrier specifies its own ota sp number
     protected String mCarrierOtaSpNumSchema;
 
+    // MTK
+    private Registrant mThreeWayEcmExitRespRegistrant;
+    private boolean mIsRadioAvailable;
+    private IGpsProcess mGpsProcess;
+    private IUtkService mUtkService = null;
+    private IPlusCodeUtils mPlusCodeUtils = ViaPolicyManager.getPlusCodeUtils();
+
     // A runnable which is used to automatically exit from Ecm after a period of time.
     private Runnable mExitEcmRunnable = new Runnable() {
         @Override
@@ -151,12 +167,23 @@ public class CDMAPhone extends PhoneBase {
     public CDMAPhone(Context context, CommandsInterface ci, PhoneNotifier notifier,
             int phoneId) {
         super("CDMA", notifier, context, ci, false, phoneId);
+
+        // MTK
+        if (FeatureOptionUtils.isMtkC2KSupport()) {
+            mGpsProcess = ViaPolicyManager.getGpsProcess(context, this, ci);
+        }
+
         initSstIcc();
         init(context, notifier);
     }
 
     protected void initSstIcc() {
-        mSST = new CdmaServiceStateTracker(this);
+        // MTK SVLTE
+        if (!FeatureOptionUtils.isCdmaLteDcSupport()) {
+            mSST = new CdmaServiceStateTracker(this);
+        } else {
+            mSST = new SvlteServiceStateTracker(this);
+        }
     }
 
     protected void init(Context context, PhoneNotifier notifier) {
@@ -164,12 +191,29 @@ public class CDMAPhone extends PhoneBase {
         mCT = new CdmaCallTracker(this);
         mCdmaSSM = CdmaSubscriptionSourceManager.getInstance(context, mCi, this,
                 EVENT_CDMA_SUBSCRIPTION_SOURCE_CHANGED, null);
-        mDcTracker = new DcTracker(this);
+
+        // MTK
+        if (FeatureOptionUtils.isMtkC2KSupport()) {
+            mGpsProcess.start();
+        }
+
+        // MTK: Delay creating and sharing DcTracker for SVLTE.
+        if (SvlteIratUtils.isIratSupportPhone(this)) {
+            // Do nothing, we will create and share DcTracker in LteDcPhoneProxy.
+            log("IRAT support, doesn't create DcTracker here.");
+        } else {
+            mDcTracker = new DcTracker(this);
+        }
+
         mRuimPhoneBookInterfaceManager = new RuimPhoneBookInterfaceManager(this);
         mSubInfo = new PhoneSubInfo(this);
         mEriManager = new EriManager(this, context, EriManager.ERI_FROM_XML);
 
         mCi.registerForAvailable(this, EVENT_RADIO_AVAILABLE, null);
+
+        // MTK
+        registerForRuimRecordEvents();
+
         mCi.registerForOffOrNotAvailable(this, EVENT_RADIO_OFF_OR_NOT_AVAILABLE, null);
         mCi.registerForOn(this, EVENT_RADIO_ON, null);
         mCi.setOnSuppServiceNotification(this, EVENT_SSN, null);
@@ -229,6 +273,16 @@ public class CDMAPhone extends PhoneBase {
             super.dispose();
             log("dispose");
 
+            // MTK AGPS
+            if (FeatureOptionUtils.isMtkC2KSupport()) {
+                mGpsProcess.stop();
+            }
+
+            if (mUtkService != null) {
+                mUtkService.dispose();
+                mUtkService = null;
+            }
+
             //Unregister from all former registered events
             unregisterForRuimRecordEvents();
             mCi.unregisterForAvailable(this); //EVENT_RADIO_AVAILABLE
@@ -239,11 +293,35 @@ public class CDMAPhone extends PhoneBase {
             mCi.unregisterForExitEmergencyCallbackMode(this);
             removeCallbacks(mExitEcmRunnable);
 
+            // MTK
+            if (mIsPhoneInEcmState) {
+                if (mWakeLock.isHeld()) {
+                    mWakeLock.release();
+                }
+                if (mEcmExitRespRegistrant != null) {
+                    mEcmExitRespRegistrant.notifyRegistrant(new AsyncResult(null, null, null));
+                }
+                //add by via for exit ECM when dial Threeway[begin]
+                if (mThreeWayEcmExitRespRegistrant != null) {
+                    mThreeWayEcmExitRespRegistrant.notifyRegistrant(
+                        new AsyncResult(null, null, null));
+                }
+                //add by via for exit ECM when dial Threeway[end]
+                mIsPhoneInEcmState = false;
+                sendEmergencyCallbackModeChange();
+            }
+            removeCallbacksAndMessages(null);
+
             mPendingMmis.clear();
 
             //Force all referenced classes to unregister their former registered events
             mCT.dispose();
-            mDcTracker.dispose();
+            // MTK SVLTE
+            if (SvlteIratUtils.isIratSupportPhone(this)) {
+                log("IRAT support, doesn't dispose DcTracker here.");
+            } else {
+                mDcTracker.dispose();
+            }
             mSST.dispose();
             mCdmaSSM.dispose(this);
             mRuimPhoneBookInterfaceManager.dispose();
@@ -763,7 +841,10 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public void setLine1Number(String alphaTag, String number, Message onComplete) {
-        Rlog.e(LOG_TAG, "setLine1Number: not possible in CDMA");
+        // Everything is possible; this is MTK!
+        // Rlog.e(LOG_TAG, "setLine1Number: not possible in CDMA");
+        Rlog.d(LOG_TAG, "setLine1Number: " + number);
+        mSST.setMdnNumber(number, onComplete);
     }
 
     @Override
@@ -1151,11 +1232,13 @@ public class CDMAPhone extends PhoneBase {
         super.notifyPreciseCallStateChangedP();
     }
 
-     void notifyServiceStateChanged(ServiceState ss) {
+     // needed for MTK SVLTE
+     public void notifyServiceStateChanged(ServiceState ss) {
          super.notifyServiceStateChangedP(ss);
      }
 
-     void notifyLocationChanged() {
+     // needed for MTK SVLTE
+     public void notifyLocationChanged() {
          mNotifier.notifyCellLocation(this);
      }
 
@@ -1975,4 +2058,187 @@ public class CDMAPhone extends PhoneBase {
         return status;
     }
 
+    // MTK
+    @Override
+    public SignalStrength getSignalStrength() {
+        return mSST.getSignalStrength();
+    }
+
+    /**
+     * Register callback for Three Way Ecm Exit Response.
+     * @param h the message hander.
+     * @param what the message id.
+     * @param obj the message object.
+     */
+    public void setOnThreeWayEcmExitResponse(Handler h, int what, Object obj) {
+        mThreeWayEcmExitRespRegistrant = new Registrant(h, what, obj);
+    }
+
+    /**
+     * Unregister callback for Three Way Ecm Exit Response.
+     * @param h the message handler.
+     */
+    public void unsetOnThreeWayEcmExitResponse(Handler h) {
+        mThreeWayEcmExitRespRegistrant.clear();
+    }
+
+    /**
+     * Support to add this API Refresh Spn Display due to configuration.
+     * change
+     */
+    public void refreshSpnDisplay() {
+        mSST.refreshSpnDisplay();
+    }
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+        Rlog.d(LOG_TAG, "switch HPF to " + enableHPF);
+        mCi.requestSwitchHPF(enableHPF, response);
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+        Rlog.d(LOG_TAG, "avoid sys " + avoidSYS);
+        mCi.setAvoidSYS(avoidSYS, response);
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+        Rlog.d(LOG_TAG, "get avoid sys list");
+        mCi.getAvoidSYSList(response);
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+        Rlog.d(LOG_TAG, "query CDMA network infor");
+        mCi.queryCDMANetworkInfo(response);
+    }
+
+    public boolean isRadioAvailable() {
+        return mIsRadioAvailable;
+    }
+
+    public String getSid() {
+        return mSST.getSid();
+    }
+
+    public String getNid() {
+        return mSST.getNid();
+    }
+
+    public String getPrl() {
+        return mSST.getPrlVersion();
+    }
+
+    /**
+     * Set MEID. The meid is only supported for 14 chars of length.
+     * @param meid the MEID value.
+     */
+    public void setMeid(String meid) {
+        Rlog.e(LOG_TAG, "setMeid() Meid = " + meid);
+        mCi.setMeid(meid, obtainMessage(EVENT_SET_MEID_DONE));
+    }
+
+    /**
+     * Set TRM.
+     * @param mode the TRM mode.
+     * @param response the responding message.
+     */
+    public void setTRM(int mode, Message response) {
+        Rlog.d(LOG_TAG, "CDMAPhone setTRM mode = " + mode);
+        mCi.setViaTRM(mode, response);
+    }
+
+    /**
+     * Set ARSI report threshold.
+     * @param threshold
+     *            the threshold value : 0 - 31,The smaller the value, the more
+     *            frequent reporting signal. // default value used by cp is 2.
+     */
+    public void setArsiReportThreshold(int threshold) {
+        Rlog.d(LOG_TAG, "setArsiReportThreshold between(0,31) threshold = " + threshold);
+        if (threshold < 0 || threshold > 31) {
+            Rlog.d(LOG_TAG, "setArsiReportThreshold threshold = " + threshold + " invalid");
+            return;
+        }
+        mCi.setArsiReportThreshold(threshold, null);
+    }
+
+    /**
+     * Check mcc by sid ltm_off.
+     * @param mccMnc the number of mccmnc.
+     * @return the number string.
+     */
+    public String checkMccBySidLtmOff(String mccMnc) {
+        if (mccMnc == null || mccMnc.length() == 0) {
+            return mccMnc;
+        }
+        /// M: Customize for swip via code.
+        return mPlusCodeUtils.checkMccBySidLtmOff(mccMnc);
+
+    }
+
+    /**
+     * Judge if the plus code can be formated.
+     * @param isCall if is in call.
+     * @return true for can, false for can't.
+     */
+    public boolean canFormatPlusCode(boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.canFormatPlusToIddNdd();
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.canFormatPlusCodeForSms();
+        }
+    }
+
+    /**
+     * Replace the plus code with idd.
+     * @param number the number will be handled.
+     * @param isCall if is in call.
+     * @return the number string.
+     */
+    public String replacePlusCodeWithIdd(String number, boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.replacePlusCodeWithIddNdd(number);
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCodeForSms(number);
+        }
+    }
+
+    /**
+     * Replace the idd with plus code.
+     * @param number the number will be handled.
+     * @param isCall if is in call.
+     * @return the number string.
+     */
+    public String replaceIddWithPlusCode(String number, boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCode(number);
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCodeForSms(number);
+        }
+    }
+    // MTK_SWIP_C2K_END
+    // TODO phone test
+    /*public void requestPhoneTestInfo(Message response) {
+        Rlog.d(LOG_TAG, "requestPhoneTestInfo");
+        mCi.requestPhoneTestInfo(response);
+    }*/
+
+    /// @}
+    ///M: For svlte support. @{
+    /**
+     * Notify the Service State Change for svlte.
+     * @param ss The Service State will be notified
+     */
+    public void notifyServiceStateChangedForSvlte(ServiceState ss) {
+        super.notifyServiceStateChangedPForSvlte(ss);
+    }
+    ///@}
 }

@@ -144,6 +144,15 @@ public abstract class BaseCommands implements CommandsInterface {
 
     protected RegistrantList mAbnormalEventRegistrant = new RegistrantList();
 
+    /// M: IMS ViLTe feature. @{
+    protected RegistrantList mVtStatusInfoRegistrants = new RegistrantList();
+    protected RegistrantList mVtRingRegistrants = new RegistrantList();
+    /// @}
+
+    // M: [C2K] [AP IRAT]
+    protected RegistrantList mLteBgSearchStatusRegistrant = new RegistrantList();
+    protected RegistrantList mLteEarfcnInfoRegistrant = new RegistrantList();
+
     // Preferred network type received from PhoneFactory.
     // This is used when establishing a connection to the
     // vendor ril so it starts up in the correct mode.
@@ -993,6 +1002,14 @@ public abstract class BaseCommands implements CommandsInterface {
 
     // MTK additions
 
+    //MTK-START [mtk06800] modem power on/off
+    @Override
+    public void setModemPower(boolean power, Message response) {
+    }
+    //MTK-END [mtk06800] modem power on/off
+
+    public void hangupAll(Message result) {}
+
     //MTK-START Support Multi-Application
     @Override
     public void openIccApplication(int application, Message response) {
@@ -1116,6 +1133,15 @@ public abstract class BaseCommands implements CommandsInterface {
 
     public void unregisterForCommonSlotNoChanged(Handler h) {
         mCommonSlotNoChangedRegistrants.remove(h);
+    }
+
+    public void registerSetDataAllowed(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mDataAllowedRegistrants.add(r);
+    }
+
+    public void unregisterSetDataAllowed(Handler h) {
+        mDataAllowedRegistrants.remove(h);
     }
 
     public void registerForPsNetworkStateChanged(Handler h, int what, Object obj) {
@@ -1352,4 +1378,162 @@ public abstract class BaseCommands implements CommandsInterface {
         //return Display type: Unknown display type.
         return 0;
     }
+
+    /* M: IMS ViLTE feature part start */
+    /**
+     * Dial video call.
+     * @param address dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param result the command result.
+     * @Override
+     */
+    public void vtDial(String address, int clirMode, Message result) {}
+
+    /**
+     * Dial video call.
+     * @param address dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param uusInfo User-User Signaling Information
+     * @param result the command result.
+     * @Override
+     */
+    public void vtDial(String address, int clirMode, UUSInfo uusInfo, Message result) {}
+    /* M: IMS ViLTE feature part end */
+
+    /* M: IMS VoLTE conference dial feature start*/
+    /**
+     * Dial conference call.
+     * @param participants participants' dailing number.
+     * @param clirMode indication to present the dialing number or not.
+     * @param isVideoCall indicate this call is belong to video call or voice call.
+     * @param result the command result.
+     */
+    public void conferenceDial(String[] participants, int clirMode,
+            boolean isVideoCall, Message result) {}
+    /* IMS VoLTE conference dial feature end*/
+
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+    @Override
+    public void registerForGmssRatChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mGmssRatChangedRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForGmssRatChanged(Handler h) {
+        mGmssRatChangedRegistrant.remove(h);
+    }
+    /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+
+    /// M: [C2K] for ps type changed. @{
+    @Override
+    public void registerForDataNetworkTypeChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mDataNetworkTypeChangedRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForDataNetworkTypeChanged(Handler h) {
+        mDataNetworkTypeChangedRegistrant.remove(h);
+    }
+    /// @}
+
+    /// [C2K][IRAT] @{
+    @Override
+    public void registerForIratStateChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mIratStateChangeRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForIratStateChanged(Handler h) {
+        mIratStateChangeRegistrant.remove(h);
+    }
+
+    @Override
+    public void confirmIratChange(int apDecision, Message result) {
+
+    }
+
+    @Override
+    public void requestSetPsActiveSlot(int psSlot, Message response) {
+    }
+
+    @Override
+    public void syncNotifyDataCallList(AsyncResult dcList) {
+
+    }
+    /// @}
+
+    // M: [C2K] AP IRAT start.
+    @Override
+    public void requestTriggerLteBgSearch(int numOfArfcn, int[] arfcn, Message response) {
+    }
+
+    @Override
+    public void registerForLteBgSearchStatus(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mLteBgSearchStatusRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForLteBgSearchStatus(Handler h) {
+        mLteBgSearchStatusRegistrant.remove(h);
+    }
+
+    @Override
+    public void requestSetLteEarfcnEnabled(boolean enable, Message response) {
+    }
+
+    @Override
+    public void registerForLteEarfcnInfo(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mLteEarfcnInfoRegistrant.add(r);
+    }
+
+    @Override
+    public void unregisterForLteEarfcnInfo(Handler h) {
+        mLteEarfcnInfoRegistrant.remove(h);
+    }
+    // M: [C2K] AP IRAT end.
+
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
+    @Override
+    public void setSvlteRatMode(int preSvlteMode, int svlteMode, int preRoamingMode,
+            int roamingMode, Message response) {
+    }
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @{
+
+    @Override
+    public void setRegistrationSuspendEnabled(int enabled, Message response) {
+    }
+
+    @Override
+    public void setResumeRegistration(int sessionId, Message response) {
+    }
+
+    @Override
+    public void setCdmaRegistrationSuspendEnabled(boolean enabled, Message response) {
+    }
+
+    @Override
+    public void setResumeCdmaRegistration(Message response) {
+    }
+
+    @Override
+    public void registerForMccMncChange(Handler h, int what, Object obj) {
+        // Rlog.d(RIL.RILJ_LOG_TAG, "registerForMccMncChange h=" + h + " w=" + what);
+        Registrant r = new Registrant(h, what, obj);
+        mMccMncChangeRegistrants.add(r);
+    }
+
+    @Override
+    public void unregisterForMccMncChange(Handler h) {
+        // Rlog.d(RIL.RILJ_LOG_TAG, "unregisterForMccMncChange");
+        mMccMncChangeRegistrants.remove(h);
+    }
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @}
 }

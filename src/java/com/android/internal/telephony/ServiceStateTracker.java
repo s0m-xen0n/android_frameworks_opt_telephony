@@ -55,6 +55,9 @@ import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
 
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
+import com.mediatek.internal.telephony.RadioManager;
+
 /**
  * {@hide}
  */
@@ -127,6 +130,12 @@ public abstract class ServiceStateTracker extends Handler {
     protected RegistrantList mNetworkAttachedRegistrants = new RegistrantList();
     protected RegistrantList mPsRestrictEnabledRegistrants = new RegistrantList();
     protected RegistrantList mPsRestrictDisabledRegistrants = new RegistrantList();
+
+    // MTK
+    // M: Report CellInfo by rate was done by polling cell info from framework by rate
+    protected int mCellInfoRate = Integer.MAX_VALUE;
+
+    protected RegistrantList mSignalStrengthChangedRegistrants = new RegistrantList();
 
     /* Radio power off pending flag and tag counter */
     protected boolean mPendingRadioPowerOffAfterDataOff = false;
@@ -203,6 +212,7 @@ public abstract class ServiceStateTracker extends Handler {
     protected static final int EVENT_SET_IMS_DISABLE_DONE = 110;
     protected static final int EVENT_IMS_DISABLED_URC = 111;
     protected static final int EVENT_IMS_REGISTRATION_INFO = 112;
+    protected static final int EVENT_PS_NETWORK_TYPE_CHANGED = 113;
 
     // MTK CDMA events
     protected static final int EVENT_QUERY_NITZ_TIME        = 200;
@@ -210,6 +220,7 @@ public abstract class ServiceStateTracker extends Handler {
     protected static final int EVENT_NETWORK_TYPE_CHANGED   = 202;
     protected static final int EVENT_ETS_DEV_CHANGED        = 203;
     protected static final int EVENT_SET_MDN_DONE           = 204;
+    protected static final int EVENT_ETS_DEV_CHANGED_LOGGER = 205;
 
     protected static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
 
@@ -924,6 +935,11 @@ public abstract class ServiceStateTracker extends Handler {
      * @return all available cell information or null if none.
      */
     public List<CellInfo> getAllCellInfo() {
+        return getAllCellInfo(false);
+    }
+
+    // MTK: refactor to avoid duplication
+    private List<CellInfo> getAllCellInfo(final boolean byRate) {
         CellInfoResult result = new CellInfoResult();
         if (VDBG) log("SST.getAllCellInfo(): E");
         int ver = mCi.getRilVersion();
@@ -931,7 +947,9 @@ public abstract class ServiceStateTracker extends Handler {
             if (isCallerOnDifferentThread()) {
                 if ((SystemClock.elapsedRealtime() - mLastCellInfoListTime)
                         > LAST_CELL_INFO_LIST_MAX_AGE_MS) {
-                    Message msg = obtainMessage(EVENT_GET_CELL_INFO_LIST, result);
+                    Message msg = obtainMessage(
+                            byRate ? EVENT_GET_CELL_INFO_LIST_BY_RATE : EVENT_GET_CELL_INFO_LIST,
+                            result);
                     synchronized(result.lockObj) {
                         result.list = null;
                         mCi.getCellInfoList(msg);
@@ -1206,5 +1224,92 @@ public abstract class ServiceStateTracker extends Handler {
         mCurSpn = spn;
         mCurPlmn = plmn;
         mCurSubId = subId;
+    }
+
+    // MTK
+
+    public void refreshSpnDisplay() {}
+
+    /**
+     * Registration point for signal strength changed.
+     * @param h handler to notify
+     * @param what what code of message when delivered
+     * @param obj placed in Message.obj
+     */
+    public void registerForSignalStrengthChanged(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mSignalStrengthChangedRegistrants.add(r);
+    }
+
+    /**
+     * Unregister registration point for signal strength changed.
+     * @param h handler to notify
+     */
+    public void unregisterForSignalStrengthChanged(Handler h) {
+        mSignalStrengthChangedRegistrants.remove(h);
+    }
+
+    protected List<CellInfo> getAllCellInfoByRate() {
+        return getAllCellInfo(true);
+    }
+
+    public void setCellInfoRate(int rateInMillis) {
+        log("SST.setCellInfoRate()");
+        mCellInfoRate = rateInMillis;
+        updateCellInfoRate();
+    }
+
+    protected void updateCellInfoRate() {
+        log("SST.updateCellInfoRate()");
+    }
+
+    /**
+     * Set the Service State Tracker for SVLTE.
+     *
+     * @param lteSST the LTE Service State Tracker
+     */
+    public void setSvlteServiceStateTracker(SvlteServiceStateTracker lteSST) {
+    }
+
+    /**
+     * Set the Signal Strength for the phone.
+     * @param ar The param include the Signal Strength.
+     * @param isGsm Mark for the Signal Strength is gsm or not.
+     */
+    protected void setSignalStrength(AsyncResult ar, boolean isGsm) {
+        SignalStrength oldSignalStrength = mSignalStrength;
+
+        if ((DBG) && (mLastSignalStrength != null)) {
+            log("Before combine Signal Strength, setSignalStrength(): isGsm = "
+                    + isGsm + " LastSignalStrength = "
+                    + mLastSignalStrength.toString());
+        }
+
+        // This signal is used for both voice and data radio signal so parse
+        // all fields
+
+        if ((ar.exception == null) && (ar.result != null)) {
+            mSignalStrength = (SignalStrength) ar.result;
+            mSignalStrength.validateInput();
+            mSignalStrength.setGsm(isGsm);
+            if (DBG) {
+                log("Before combine Signal Strength, setSignalStrength(): isGsm = "
+                        + isGsm + "new mSignalStrength = "
+                        + mSignalStrength.toString());
+            }
+        } else {
+            log("Before combine Signal Strength, setSignalStrength() Exception from RIL : "
+                    + ar.exception);
+            mSignalStrength = new SignalStrength(isGsm);
+        }
+    }
+
+    /**
+     * Return true if plmn is Home Plmn.
+     * @param plmn
+     * @return true is plmn is home plmn
+     */
+    public boolean isHPlmn(String plmn) {
+        return false;
     }
 }

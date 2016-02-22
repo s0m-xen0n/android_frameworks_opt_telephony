@@ -36,6 +36,7 @@ import android.os.Registrant;
 import android.os.RegistrantList;
 import android.provider.Settings;
 import android.telephony.Rlog;
+import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
 import android.telephony.SubscriptionManager.OnSubscriptionsChangedListener;
 import android.util.SparseArray;
@@ -51,13 +52,20 @@ import com.android.internal.util.AsyncChannel;
 import com.android.internal.telephony.dataconnection.DdsScheduler;
 import com.android.internal.telephony.TelephonyIntents;
 
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+// import com.mediatek.internal.telephony.dataconnection.DataSubSelector;
+import com.mediatek.internal.telephony.ltedc.svlte.IratController;
+import com.mediatek.internal.telephony.ltedc.svlte.IratDataSwitchHelper;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteIratUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvltePhoneProxy;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map.Entry;
 
-public class DctController extends Handler {
+public class DctController extends Handler implements IratController.OnIratEventListener {
     private static final String LOG_TAG = "DctController";
     private static final boolean DBG = true;
 
@@ -107,6 +115,15 @@ public class DctController extends Handler {
     private NetworkCapabilities[] mNetworkFilter;
 
     private SubscriptionManager mSubMgr;
+
+    // MTK
+    // MTK CDMA
+    private boolean mSuspendNetworkRequest;
+    private boolean mHasPendingDataSwitch;
+
+    private PhoneBase mActivePsPhone;
+    private IratController mIratController;
+    private IratDataSwitchHelper mIratDataSwitchHelper;
 
     private BroadcastReceiver defaultDdsBroadcastReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
@@ -1384,5 +1401,85 @@ public class DctController extends Handler {
         pw.flush();
         pw.println("++++++++++++++++++++++++++++++++");
         pw.flush();
+    }
+
+    // MTK
+    // MTK CDMA
+    private void updatePhone() {
+        // Update the first phone and register
+        PhoneBase newPsPhone = (PhoneBase) ((SvltePhoneProxy) mPhones[SvlteIratUtils
+                .getIratSupportSlotId()]).getPsPhone();
+        if (mActivePsPhone.getPhoneType() == newPsPhone.getPhoneType()) {
+            logd("[IRAT_DctController] Ignore updatePhone: newPsPhone = "
+                    + newPsPhone + ", mActivePsPhone = " + mActivePsPhone);
+            return;
+        }
+        logd("[IRAT_DCT] AP IRAT update phone: newPsPhone = " + newPsPhone);
+        mActivePsPhone = newPsPhone;
+    }
+
+    private PhoneBase getActivePhone(int phoneId) {
+        PhoneBase psPhone = null;
+        if (SvlteIratUtils.isIratSupportPhone(mPhones[phoneId])) {
+            psPhone = (PhoneBase) ((SvltePhoneProxy) mPhones[phoneId]).getPsPhone();
+            mActivePsPhone = psPhone;
+        } else {
+            psPhone = (PhoneBase) ((PhoneProxy) mPhones[phoneId]).getActivePhone();
+        }
+        return psPhone;
+    }
+
+    private void onIratDataRatChanged(int sourceRat, int targetRat) {
+        logd("[IRAT_DctController] onIratDataRatChanged: sourceRat = "
+                + ServiceState.rilRadioTechnologyToString(sourceRat)
+                + ", targetRat = "
+                + ServiceState.rilRadioTechnologyToString(targetRat));
+        if (sourceRat == ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN) {
+            logd("[IRAT_DctController] First register on C2K/LTE network.");
+            updatePhone();
+        }
+    }
+
+    @Override
+    public void onIratStarted(Object info) {
+        logd("[IRAT_DctController] onIratStarted: info = " + info);
+    }
+
+    @Override
+    public void onIratEnded(Object info) {
+        logd("[IRAT_DctController] onIratEnded: info = " + info);
+        updatePhone();
+    }
+
+    private boolean isNetworkRequestSuspend() {
+        return mSuspendNetworkRequest;
+    }
+
+    /**
+     * Suspend network request and data switch request.
+     */
+    public void suspendNetworkRequest() {
+        logd("[IRAT_DctController] suspendNetworkRequest: mSuspendNetworkRequest = "
+                + mSuspendNetworkRequest);
+        mSuspendNetworkRequest = true;
+    }
+
+    /**
+     * Resume network request, called in IRAT finished.
+     */
+    public void resumeNetworkRequest() {
+        logd("[IRAT_DctController] resumeNetworkRequest: mSuspendNetworkRequest = "
+                + mSuspendNetworkRequest);
+        mSuspendNetworkRequest = false;
+
+        for (int i = 0; i < mPhoneNum; ++i) {
+            ((DctController.TelephonyNetworkFactory) mNetworkFactory[i])
+                    .evalPendingRequest();
+        }
+
+        if (mHasPendingDataSwitch) {
+            onSettingsChange();
+            mHasPendingDataSwitch = false;
+        }
     }
 }
