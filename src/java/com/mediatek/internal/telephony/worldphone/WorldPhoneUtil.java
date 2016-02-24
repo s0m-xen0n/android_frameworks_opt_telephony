@@ -37,7 +37,7 @@ package com.mediatek.internal.telephony.worldphone;
 import android.content.Context;
 import android.os.SystemProperties;
 import android.provider.Settings;
-import android.telephony.PhoneRatFamily;
+import android.telephony.RadioAccessFamily;
 import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
@@ -45,18 +45,23 @@ import android.telephony.TelephonyManager;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
+import com.android.internal.telephony.ProxyController;
 import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.PhoneProxy;
 import com.android.internal.telephony.TelephonyProperties;
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
 
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteModeController;
 
 /**
  *@hide
  */
 public class WorldPhoneUtil implements IWorldPhone {
     private static final int PROJECT_SIM_NUM = TelephonyManager.getDefault().getSimCount();
-    private static final boolean IS_WORLD_PHONE_SUPPORT = true;  // (SystemProperties.getInt(TelephonyProperties.PROPERTY_WORLD_PHONE, 0) == 1);
+    private static final boolean IS_WORLD_PHONE_SUPPORT = (SystemProperties.getInt("ro.mtk_world_phone", 0) == 1);
     private static final boolean IS_LTE_SUPPORT = (SystemProperties.getInt("ro.mtk_lte_support", 0) == 1);
+    private static final boolean IS_CDMA_LTE_DC_SUPPORT = CdmaFeatureOptionUtils.isCdmaLteDcSupport();
+    private static final String PROPERTY_MAJOR_SIM = "persist.radio.simswitch";
     private static Context sContext = null;
     private static Phone sDefultPhone = null;
     private static Phone[] sProxyPhones = null;
@@ -81,20 +86,19 @@ public class WorldPhoneUtil implements IWorldPhone {
     }
 
     public static int getMajorSim() {
-        if (sProxyPhones == null) {
-            logd("[getMajorSim] sProxyPhones = null");
-            return DEFAULT_MAJOR_SIM;
-        }
-        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
-            if ((((PhoneBase) sActivePhones[i]).getPhoneRatFamily()
-                    & PhoneRatFamily.PHONE_RAT_FAMILY_3G) == PhoneRatFamily.PHONE_RAT_FAMILY_3G) {
-                logd("[getMajorSim]: " + i);
-                return i;
+        if (!ProxyController.getInstance().isCapabilitySwitching()) {
+            String currMajorSim = SystemProperties.get(PROPERTY_MAJOR_SIM, "");
+            if (currMajorSim != null && !currMajorSim.equals("")) {
+                logd("[getMajorSim]: " + ((Integer.parseInt(currMajorSim)) - 1));
+                return (Integer.parseInt(currMajorSim)) - 1;
+            } else {
+                logd("[getMajorSim]: fail to get major SIM");
+                return MAJOR_SIM_UNKNOWN;
             }
+        } else {
+            logd("[getMajorSim]: radio capability is switching");
+            return MAJOR_SIM_UNKNOWN;
         }
-        logd("[getMajorSim]: fail to get major SIM");
-
-        return DEFAULT_MAJOR_SIM;
     }
 
     public static int getModemSelectionMode() {
@@ -238,6 +242,37 @@ public class WorldPhoneUtil implements IWorldPhone {
     }
 
     public void setModemSelectionMode(int mode, int modemType) {
+    }
+
+    public void notifyRadioCapabilityChange(int capailitySimId) {
+    }
+
+    public static boolean isCdmaLteDcSupport(){
+        return IS_CDMA_LTE_DC_SUPPORT;
+    }
+
+    //C2K world phone
+    public static int getRadioTechModeForWp(){
+        int mode = RADIO_TECH_MODE_FOR_WP_UNKNOWN;
+        if (isCdmaLteDcSupport()) {
+            int majorySimId = getMajorSim();
+            int svlteModeSlotId = SvlteModeController.getActiveSvlteModeSlotId();
+            logd("[getRadioTechModeForWp]: majorySimId=" + majorySimId +
+                    " svlteModeSlotId=" + svlteModeSlotId);
+            if (majorySimId != MAJOR_SIM_UNKNOWN){
+                if (svlteModeSlotId == majorySimId) {
+                    mode = RADIO_TECH_MODE_FOR_WP_SVLTE;
+                } else {
+                    mode = RADIO_TECH_MODE_FOR_WP_CSFB;
+                }
+            } else {
+                mode = RADIO_TECH_MODE_FOR_WP_UNKNOWN;
+            }
+        } else {
+            mode = RADIO_TECH_MODE_FOR_WP_CSFB;
+        }
+        logd("[getRadioTechModeForWp]: "+ mode);
+        return mode;
     }
 
     private static void logd(String msg) {

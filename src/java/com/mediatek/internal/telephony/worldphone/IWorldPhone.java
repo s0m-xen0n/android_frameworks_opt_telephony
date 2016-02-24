@@ -62,6 +62,19 @@ public interface IWorldPhone {
     static final int EVENT_QUERY_MODEM_TYPE   = 50;
     static final int EVENT_INVALID_SIM_NOTIFY_1 = 60;
     static final int EVENT_INVALID_SIM_NOTIFY_2 = 61;
+    static final int EVENT_RESUME_CAMPING       = 70;   //[ALPS01974750]
+
+    //C2K world phone - start
+    static final int EVENT_RADIO_ON_SVLTE_1 = 1000;
+    static final int EVENT_RADIO_ON_SVLTE_2 = 1001;
+    static final int EVENT_REG_PLMN_CHANGED_SVLTE_1 = 1010;
+    static final int EVENT_REG_PLMN_CHANGED_SVLTE_2 = 1011;
+    static final int EVENT_REG_SUSPENDED_SVLTE_1    = 1030;
+    static final int EVENT_REG_SUSPENDED_SVLTE_2    = 1031;
+    static final int EVENT_INVALID_SIM_NOTIFY_SVLTE_1 = 1040;
+    static final int EVENT_INVALID_SIM_NOTIFY_SVLTE_2 = 1041;
+    static final int EVENT_WP_CARD_TYPE_READY         = 1050;  //[ALPS02045100]
+    //C2K world phone - end
 
     static final int DEFAULT_MAJOR_SIM    = 0;
     static final int MAJOR_CAPABILITY_OFF = -1;
@@ -78,9 +91,26 @@ public interface IWorldPhone {
     static final int ICC_CARD_TYPE_SIM     = 1;
     static final int ICC_CARD_TYPE_USIM    = 2;
 
+    //switch modem cause type
+    static final int CAUSE_TYPE_PLMN_CHANGE = 0;
+    static final int CAUSE_TYPE_OOS   = 1;
+    static final int CAUSE_TYPE_OTHERS   = 255; //default value, EM, SIM switch,CU/CT card etc
+
+    //C2K world phone
+    static final int RADIO_TECH_MODE_FOR_WP_UNKNOWN = 0;
+    static final int RADIO_TECH_MODE_FOR_WP_CSFB  = 1;
+    static final int RADIO_TECH_MODE_FOR_WP_SVLTE = 2;
+
     static final String NO_OP = "OM";
     static final String ACTION_SHUTDOWN_IPO = "android.intent.action.ACTION_SHUTDOWN_IPO";
     static final String ACTION_ADB_SWITCH_MODEM = "android.intent.action.ACTION_ADB_SWITCH_MODEM";
+    static final String PROPERTY_SWITCH_MODEM_CAUSE_TYPE = "ril.switch.modem.cause.type";
+
+    //For Test
+    static final String ACTION_TEST_WORLDPHONE = "android.intent.action.ACTION_TEST_WORLDPHOE";
+    static final String EXTRA_FAKE_USER_TYPE = "FAKE_USER_TYPE";
+    static final String EXTRA_FAKE_REGION = "EXTRA_FAKE_REGION";
 
     public void setModemSelectionMode(int mode, int modemType);
+    public void notifyRadioCapabilityChange(int capailitySimId);
 }

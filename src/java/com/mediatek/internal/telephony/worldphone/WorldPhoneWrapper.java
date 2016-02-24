@@ -80,6 +80,9 @@ public class WorldPhoneWrapper implements IWorldPhone {
         }
     }
 
+    public void notifyRadioCapabilityChange(int capailitySimId) {
+    }
+
     private static void logd(String msg) {
         Rlog.d(LOG_TAG, "[WPO_WRAPPER]" + msg);
     }
