@@ -403,6 +403,18 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
     }
 
     @Override
+    public void
+    getDataCallProfile(int appType, Message result) {
+        Rlog.d(RILJ_LOG_TAG, "getDataCallProfile: not supported on MTK!");
+        if (result != null) {
+            CommandException ex = new CommandException(
+                CommandException.Error.REQUEST_NOT_SUPPORTED);
+            AsyncResult.forMessage(result, null, ex);
+            result.sendToTarget();
+        }
+    }
+
+    @Override
     public void getModemCapability(Message response) {
         Rlog.d(RILJ_LOG_TAG, "GetModemCapability");
         // sendOemRilRequestRaw(OEMHOOK_EVT_HOOK_GET_MODEM_CAPABILITY, 0, null, response);
