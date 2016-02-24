@@ -144,7 +144,7 @@ public class SvlteRilArbitrator extends DefaultRilDcArbitrator {
             final String protocol, final String interfaceId,
             final Message result) {
         log("setupDataCall: mSuspendDataRequest = " + mSuspendDataRequest
-                + ",mPsCi = " + mPsCi + ", apn = " + apn);
+                + ",mPsCi = " + mPsCi + ", apn = " + apn + ", if = " + interfaceId);
         if (mSuspendDataRequest) {
             enqueuePsRequest(new Runnable() {
                 @Override

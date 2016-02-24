@@ -2075,9 +2075,8 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
 
             String[] nitzSubs = nitz.split("[/:,+-]");
 
-            // NOTE: MTK code here directly uses the parsed part, which is
-            // obviously not correct. Keeping for now.
-            int year = 2000 + Integer.parseInt(nitzSubs[0]);
+            // fxxk, seems MTK is formatting their NITZ differently for GSM/LTE and CDMA...
+            int year = Integer.parseInt(nitzSubs[0]);
             c.set(Calendar.YEAR, year);
 
             // month is 0 based!

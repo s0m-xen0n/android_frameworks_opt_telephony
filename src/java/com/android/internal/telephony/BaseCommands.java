@@ -1210,6 +1210,11 @@ public abstract class BaseCommands implements CommandsInterface {
         mPhoneRatFamilyChangedRegistrants.remove(h);
     }
 
+    public void setupDataCall(String radioTechnology, String profile,
+            String apn, String user, String password, String authType,
+            String protocol, String interfaceId, Message result) {
+    }
+
     // M: fast dormancy
     public void setScriResult(Handler h, int what, Object obj) {
         mScriResultRegistrant = new Registrant(h, what, obj);

@@ -629,6 +629,9 @@ public class RadioManager extends Handler  {
 
     private void updatePhoneRadioPower(boolean power, int phoneId) {
         Phone phone = PhoneFactory.getPhone(phoneId);
+        if (phone == null) {
+            log("updatePhoneRadioPower: XXX: phone[" + phoneId + "] is NULL!!!");
+        }
         // FIXME: To find a better way to get SVLTE card/phone slot
         final int svlteSlot = 0;
         if (FeatureOptionUtils.isCdmaLteDcSupport() &&
@@ -636,7 +639,9 @@ public class RadioManager extends Handler  {
             if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID && power) {
                 // LTE: need enable radio when UICC is 4G CT
                 if (SvlteUiccUtils.getInstance().isUsimWithCsim(svlteSlot)) {
-                    phone.setRadioPower(power);
+                    if (phone != null) {
+                        phone.setRadioPower(power);
+                    }
                 } else {
                     log("updatePhoneRadioPower: slot0 not CT LTE card, no need turn on radio!");
                 }
@@ -702,7 +707,8 @@ public class RadioManager extends Handler  {
         String ret;
         if (FeatureOptionUtils.isCdmaLteDcSupport() &&
                 (phoneId == 0 || phoneId == SubscriptionManager.LTE_DC_PHONE_ID)) {
-            String svlet_lte = SystemProperties.get("ril.iccid.sim1_lte");
+            // XXX: "ril.iccid.sim1_lte" is nonexistent in latest MTK blob!
+            String svlet_lte = SystemProperties.get("ril.iccid.sim1");
             String svlet_c2k = SystemProperties.get("ril.iccid.sim1_c2k");
             String cdmaType = SystemProperties.get("gsm.ril.uicc.3gpp2type");
             log("readIccIdUsingPhoneId phoneId=" + phoneId + ", svlet_lte="

@@ -26,12 +26,19 @@ import com.android.internal.telephony.DctConstants;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
+import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.RILConstants;
 import com.android.internal.telephony.RetryManager;
 import com.android.internal.util.AsyncChannel;
 import com.android.internal.util.Protocol;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.IRilDcArbitrator;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteIratUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvltePhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteSstProxy;
 
 import android.app.PendingIntent;
 import android.content.Context;
@@ -49,6 +56,7 @@ import android.os.Message;
 import android.os.Messenger;
 import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
@@ -212,8 +220,15 @@ public final class DataConnection extends StateMachine {
     static final int EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED = BASE + 11;
     static final int EVENT_DATA_CONNECTION_ROAM_ON = BASE + 12;
     static final int EVENT_DATA_CONNECTION_ROAM_OFF = BASE + 13;
+    // MTK
+    static final int EVENT_DATA_STATE_CHANGED_FOR_LOADED = BASE + 14;
+    //VoLTE
+    protected static final int EVENT_PCSCF_DISCOVERY_DONE = BASE + 15;
+    //FALLBACK PDP Retry
+    static final int EVENT_FALLBACK_RETRY_CONNECTION = BASE + 16;
+    static final int EVENT_FALLBACK_GET_LAST_FAIL_DONE = BASE + 17;
 
-    private static final int CMD_TO_STRING_COUNT = EVENT_DATA_CONNECTION_ROAM_OFF - BASE + 1;
+    private static final int CMD_TO_STRING_COUNT = EVENT_FALLBACK_GET_LAST_FAIL_DONE - BASE + 1;
     private static String[] sCmdToString = new String[CMD_TO_STRING_COUNT];
     static {
         sCmdToString[EVENT_CONNECT - BASE] = "EVENT_CONNECT";
@@ -232,6 +247,13 @@ public final class DataConnection extends StateMachine {
                 "EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED";
         sCmdToString[EVENT_DATA_CONNECTION_ROAM_ON - BASE] = "EVENT_DATA_CONNECTION_ROAM_ON";
         sCmdToString[EVENT_DATA_CONNECTION_ROAM_OFF - BASE] = "EVENT_DATA_CONNECTION_ROAM_OFF";
+        // MTK
+        sCmdToString[EVENT_DATA_STATE_CHANGED_FOR_LOADED - BASE] =
+                "EVENT_DATA_STATE_CHANGED_FOR_LOADED";
+        sCmdToString[EVENT_PCSCF_DISCOVERY_DONE - BASE]= "EVENT_PCSCF_DISCOVERY_DONE";
+        sCmdToString[EVENT_FALLBACK_RETRY_CONNECTION - BASE] = "EVENT_FALLBACK_RETRY_CONNECTION";
+        sCmdToString[EVENT_FALLBACK_GET_LAST_FAIL_DONE - BASE] =
+                "EVENT_FALLBACK_GET_LAST_FAIL_DONE";
     }
     // Convert cmd to string or null if unknown
     static String cmdToString(int cmd) {
@@ -566,12 +588,36 @@ public final class DataConnection extends StateMachine {
             protocol = mApnSetting.protocol;
         }
 
+        /*
         mPhone.mCi.setupDataCall(
                 getDataTechnology(cp.mRilRat),
                 Integer.toString(dataProfileId),
                 mApnSetting.apn, mApnSetting.user, mApnSetting.password,
                 Integer.toString(authType),
                 protocol, msg);
+        */
+        /* -- not porting VoLTE for now
+        if (1 == cp.mDefaultBearerConfig.mIsValid) {   //request from VA for VoLTE
+
+            DefaultBearerConfig defaultBearerConfig = new DefaultBearerConfig();
+            defaultBearerConfig.copyFrom(cp.mDefaultBearerConfig);
+
+            mPhone.mCi.setupDataCall(Integer.toString(cp.mRilRat + 2),
+                Integer.toString(cp.mProfileId),
+                mApnSetting.apn, mApnSetting.user, mApnSetting.password,
+                Integer.toString(authType),
+                protocol, String.valueOf(mId + 1), defaultBearerConfig, msg);
+        } else
+        */
+        {
+            log("onConnect: setupDataCall: ignoring mId = " + mId + " for now!");
+            // MTK: [C2K][IRAT] Use RilArbitrator to setup data.
+            setupDataCall(Integer.toString(cp.mRilRat + 2),
+                Integer.toString(cp.mProfileId), mApnSetting.apn,
+                mApnSetting.user, mApnSetting.password,
+                Integer.toString(authType), protocol, String.valueOf(mId + 1),
+                msg);
+        }
     }
 
     /**
@@ -923,21 +969,41 @@ public final class DataConnection extends StateMachine {
         NetworkCapabilities result = new NetworkCapabilities();
         result.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR);
 
+        // MTK: check if data enabled
+        boolean isDataEnable = Settings.Global.getInt(
+            mPhone.getContext().getContentResolver(), Settings.Global.MOBILE_DATA, 1) == 1;
+        log("makeNetworkCapabilities: isDataEnabled=" + isDataEnable);
+
         if (mApnSetting != null) {
             for (String type : mApnSetting.types) {
                 switch (type) {
                     case PhoneConstants.APN_TYPE_ALL: {
-                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        // MTK: [C2K][IRAT] Check sub ID for LTE DC sub
+                        if (isDataEnable && isDefaultDataSubPhone(mPhone)) {
+                            result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        }
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_MMS);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_SUPL);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_FOTA);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IMS);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_CBS);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IA);
+                        // MTK
+                        /*
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_DM);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_WAP);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_NET);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_CMMAIL);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_TETHERING);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCSE);
+                        */
                         break;
                     }
                     case PhoneConstants.APN_TYPE_DEFAULT: {
-                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        // MTK: [C2K][IRAT] Check sub ID for LTE DC sub
+                        if (isDataEnable && isDefaultDataSubPhone(mPhone)) {
+                            result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        }
                         break;
                     }
                     case PhoneConstants.APN_TYPE_MMS: {
@@ -971,6 +1037,33 @@ public final class DataConnection extends StateMachine {
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IA);
                         break;
                     }
+                    // MTK
+                    /*
+                    case PhoneConstants.APN_TYPE_DM: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_DM);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_WAP: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_WAP);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_NET: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_NET);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_CMMAIL: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_CMMAIL);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_TETHERING: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_TETHERING);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_RCSE: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCSE);
+                        break;
+                    }
+                    */
                     default:
                 }
                 if (mPhone.getSubId() != SubscriptionManager.getDefaultDataSubId()) {
@@ -1076,9 +1169,14 @@ public final class DataConnection extends StateMachine {
         public void enter() {
             if (DBG) log("DcDefaultState: enter");
 
-            // Register for DRS or RAT change
-            mPhone.getServiceStateTracker().registerForDataRegStateOrRatChanged(getHandler(),
-                    DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            // MTK: [C2K][IRAT] Register for DRS or RAT change
+            if (SvlteIratUtils.isIratSupportPhone(mPhone)) {
+                SvlteSstProxy.getInstance().registerForDataRegStateOrRatChanged(getHandler(),
+                       DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            } else {
+                mPhone.getServiceStateTracker().registerForDataRegStateOrRatChanged(getHandler(),
+                      DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            }
 
             mPhone.getServiceStateTracker().registerForDataRoamingOn(getHandler(),
                     DataConnection.EVENT_DATA_CONNECTION_ROAM_ON, null);
@@ -1092,8 +1190,12 @@ public final class DataConnection extends StateMachine {
         public void exit() {
             if (DBG) log("DcDefaultState: exit");
 
-            // Unregister for DRS or RAT change.
-            mPhone.getServiceStateTracker().unregisterForDataRegStateOrRatChanged(getHandler());
+            // MTK: [C2K][IRAT] Unregister for DRS or RAT change.
+            if (SvlteIratUtils.isIratSupportPhone(mPhone)) {
+                SvlteSstProxy.getInstance().unregisterForDataRegStateOrRatChanged(getHandler());
+            } else {
+                mPhone.getServiceStateTracker().unregisterForDataRegStateOrRatChanged(getHandler());
+            }
 
             mPhone.getServiceStateTracker().unregisterForDataRoamingOn(getHandler());
             mPhone.getServiceStateTracker().unregisterForDataRoamingOff(getHandler());
@@ -1247,6 +1349,22 @@ public final class DataConnection extends StateMachine {
                                 + " drs=" + mDataRegState
                                 + " mRilRat=" + mRilRat);
                     }
+                    // MTK: [C2K][IRAT] Get network type from IRAT controller
+                    if (!SvlteIratUtils.isIratSupportPhone(mPhone)) {
+                        ServiceState ss = mPhone.getServiceState();
+                        int networkType = ss.getDataNetworkType();
+                        mNetworkInfo.setSubtype(networkType, TelephonyManager
+                                .getNetworkTypeName(networkType));
+                    } else {
+                        if (SvlteIratUtils.isMdIratSupport()) {
+                            final int networkType = SvlteIratUtils
+                                    .getSvltePhoneProxy().getIratController()
+                                    .getCurrentRat();
+                            mNetworkInfo.setSubtype(networkType,
+                                    TelephonyManager
+                                            .getNetworkTypeName(networkType));
+                        }
+                    }
                     ServiceState ss = mPhone.getServiceState();
                     int networkType = ss.getDataNetworkType();
                     mNetworkInfo.setSubtype(networkType,
@@ -1358,6 +1476,16 @@ public final class DataConnection extends StateMachine {
                 case EVENT_CONNECT:
                     if (DBG) log("DcInactiveState: mag.what=EVENT_CONNECT");
                     ConnectionParams cp = (ConnectionParams) msg.obj;
+
+                    // MTK: the connect request could be executed only if this is active data sub
+                    if (!DctController.getInstance().isActivePhone(mPhone.getPhoneId())) {
+                        log("DcInactiveState: msg.what=EVENT_CONNECT but is not active data sub");
+                        notifyConnectCompleted(cp, DcFailCause.UNACCEPTABLE_NETWORK_PARAMETER,
+                                false);
+                        retVal = HANDLED;
+                        break;
+                    }
+
                     if (initConnection(cp)) {
                         onConnect(mConnectionParams);
                         transitionTo(mActivatingState);
@@ -1512,6 +1640,14 @@ public final class DataConnection extends StateMachine {
                                 + " RefCount=" + mApnContexts.size() + " cp=" + cp
                                 + " mConnectionParams=" + mConnectionParams);
                     }
+
+                    // MTK: the connect request could be executed only if this is active data sub
+                    if (!DctController.getInstance().isActivePhone(mPhone.getPhoneId())) {
+                        log("DcRetryingState: msg.what=EVENT_CONNECT but is not active data sub");
+                        retVal = HANDLED;
+                        break;
+                    }
+
                     if (initConnection(cp)) {
                         onConnect(mConnectionParams);
                         transitionTo(mActivatingState);
@@ -2200,5 +2336,68 @@ public final class DataConnection extends StateMachine {
         pw.println(" mAc=" + mAc);
         pw.println(" mDcRetryAlarmController=" + mDcRetryAlarmController);
         pw.flush();
+    }
+
+    // MTK CDMA IRAT
+    void updatePhone(PhoneBase phone) {
+        logd("[IRAT_DC] updatePhone: mPhone = " + mPhone + ", phone = " + phone);
+        // Unregister roaming events.
+        mPhone.getServiceStateTracker().unregisterForDataRoamingOn(getHandler());
+        mPhone.getServiceStateTracker().unregisterForDataRoamingOff(getHandler());
+
+        //updatePhone
+        mPhone = phone;
+
+        // Register roaming events.
+
+        mPhone.getServiceStateTracker().registerForDataRoamingOn(getHandler(),
+                DataConnection.EVENT_DATA_CONNECTION_ROAM_ON, null);
+        mPhone.getServiceStateTracker().registerForDataRoamingOff(getHandler(),
+                DataConnection.EVENT_DATA_CONNECTION_ROAM_OFF, null);
+    }
+
+    private void setupDataCall(String radioTechnology, String profile,
+            String apn, String user, String password, String authType,
+            String protocol, String interfaceId, Message result) {
+        if (!SvlteIratUtils.isIratSupportPhone(mPhone)) {
+            mPhone.mCi.setupDataCall(radioTechnology, profile, apn, user,
+                    password, authType, protocol, interfaceId, result);
+        } else {
+            getRilDcArbitrator().setupDataCall(radioTechnology, profile, apn,
+                    user, password, authType, protocol, interfaceId, result);
+        }
+    }
+
+    private void deactivateDataCall(int cid, int reason, Message result) {
+        if (!SvlteIratUtils.isIratSupportPhone(mPhone)) {
+            mPhone.mCi.deactivateDataCall(cid, reason, result);
+        } else {
+            getRilDcArbitrator().deactivateDataCall(cid, reason, result);
+        }
+    }
+
+    private IRilDcArbitrator getRilDcArbitrator() {
+        return ((SvltePhoneProxy) PhoneFactory.getPhone(SvlteIratUtils
+                .getIratSupportSlotId())).getRilDcArbitrator();
+    }
+
+    private boolean isDefaultDataSubPhone(Phone phone) {
+        final int defaultDataPhoneId = SubscriptionManager.from(phone.getContext())
+                .getDefaultDataPhoneId();
+        final int curPhoneId = phone.getPhoneId();
+        if (SvlteIratUtils.isIratSupportPhone(phone)) {
+            if (!SvlteIratUtils.isIratSupportPhone(defaultDataPhoneId)) {
+                log("[IRAT_DCT] isDefaultDataSubPhone: curPhoneId = "
+                        + curPhoneId + ", defaultDataPhoneId = "
+                        + defaultDataPhoneId);
+                return false;
+            }
+        } else if (defaultDataPhoneId != curPhoneId) {
+            log("Current phone is not default phone: curPhoneId = "
+                    + curPhoneId + ", defaultDataPhoneId = "
+                    + defaultDataPhoneId);
+            return false;
+        }
+        return true;
     }
 }

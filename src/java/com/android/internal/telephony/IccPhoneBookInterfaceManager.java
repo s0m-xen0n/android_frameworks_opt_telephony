@@ -485,5 +485,19 @@ public abstract class IccPhoneBookInterfaceManager {
         }
         return spareEmailCount;
     }
+
+    // MTK
+    // TODO: port the complete MTK phone book impl when I'm in the mood
+    // for now just make things compile
+
+    public void updateIccRecords(IccRecords iccRecords) {
+        if (iccRecords != null) {
+            mAdnCache = iccRecords.getAdnCache();
+            logd("[updateIccRecords] Set mAdnCache value");
+        } else {
+            mAdnCache = null;
+            logd("[updateIccRecords] Set mAdnCache value to null");
+        }
+    }
 }
 

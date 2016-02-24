@@ -2147,16 +2147,30 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         send(rr);
     }
 
-    // Override setupDataCall as the MTK RIL needs 8th param CID (hardwired to 1?)
     @Override
     public void
     setupDataCall(String radioTechnology, String profile, String apn,
             String user, String password, String authType, String protocol,
             Message result) {
+        /* [Note by mtk01411] In original Android2.1 release: MAX PDP Connection is 1
+         * request_cid is only allowed to set as "1" manually
+         */
+        setupDataCall(radioTechnology, profile, apn, user, password, authType, protocol, "1", result);
+    }
+
+    @Override
+    public void
+    setupDataCall(String radioTechnology, String profile, String apn,
+            String user, String password, String authType, String protocol,
+            String interfaceId, Message result) {
         RILRequest rr
                 = RILRequest.obtain(RIL_REQUEST_SETUP_DATA_CALL, result);
 
-        rr.mParcel.writeInt(8);
+        if (SystemProperties.get("ro.mtk_ims_support").equals("1")) {
+            rr.mParcel.writeInt(17);
+        } else {
+            rr.mParcel.writeInt(8); //the number should be changed according to number of parameters
+        }
 
         rr.mParcel.writeString(radioTechnology);
         rr.mParcel.writeString(profile);
@@ -2165,12 +2179,25 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         rr.mParcel.writeString(password);
         rr.mParcel.writeString(authType);
         rr.mParcel.writeString(protocol);
-        rr.mParcel.writeString("1");
+        rr.mParcel.writeString(interfaceId);
+
+        //VoLTE
+        /*
+        rr.mParcel.writeString("" + defaultBearerConfig.mIsValid);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.qci);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.dlGbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.ulGbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.dlMbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.ulMbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mEmergency_ind);
+        rr.mParcel.writeString("" + defaultBearerConfig.mPcscf_discovery_flag);
+        rr.mParcel.writeString("" + defaultBearerConfig.mSignaling_flag);
+        */
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> "
                 + requestToString(rr.mRequest) + " " + radioTechnology + " "
                 + profile + " " + apn + " " + user + " "
-                + password + " " + authType + " " + protocol + "1");
+                + password + " " + authType + " " + protocol + " " + interfaceId);
 
         send(rr);
     }

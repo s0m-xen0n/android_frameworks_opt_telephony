@@ -78,6 +78,10 @@ import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
 import com.android.internal.telephony.PhoneConstants;
 
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+import com.mediatek.internal.telephony.RadioManager;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -169,6 +173,25 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
     static final int PS_NOTIFICATION = 888;  // Id to update and cancel PS restricted
     static final int CS_NOTIFICATION = 999;  // Id to update and cancel CS restricted
 
+    /// M: [C2K][SVLTE]. @{
+    // Support modem remote SIM access.
+    private boolean mConfigModemStatus = false;
+    // Support 3gpp UICC card type.
+    static final String[] PROPERTY_RIL_UICC_3GPP_TYPE = {
+        "gsm.ril.uicc.3gpptype",
+        "gsm.ril.uicc.3gpptype.2",
+        "gsm.ril.uicc.3gpptype.3",
+        "gsm.ril.uicc.3gpptype.4",
+    };
+    // XXX: fxxk this duplication
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    protected SvlteServiceStateTracker mSvlteSST;
+
     private BroadcastReceiver mIntentReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -185,6 +208,22 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 mAlarmSwitch = false;
                 DcTrackerBase dcTracker = mPhone.mDcTracker;
                 powerOffRadioSafely(dcTracker);
+            }
+            // MTK
+            else if (intent.getAction().equals(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED)) {
+                /* ALPS01845510: force notify service state changed to handle service state changed happend during sub info not ready short period  */
+                log("ACTION_SUBINFO_RECORD_UPDATED force notifyServiceStateChanged: "+mSS);
+                ///M:svlte service state notify.@{
+                if (isPhone1SVLTE()) {
+                    log("notifyServiceStateChanged mLteSST = " + mSvlteSST + "this = " + this);
+                    if (mSvlteSST != null) {
+                        mPhone.notifyServiceStateChangedPForRegistrants(mSS);
+                        mSvlteSST.notifyServiceStateChanged(mSS);
+                    }
+                } else {
+                    mPhone.notifyServiceStateChanged(mSS);
+                }
+                    ///@}
             }
         }
     };
@@ -257,6 +296,10 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         // Monitor locale change
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_LOCALE_CHANGED);
+
+        // MTK
+        filter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+
         phone.getContext().registerReceiver(mIntentReceiver, filter);
 
         filter = new IntentFilter();
@@ -338,7 +381,27 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             case EVENT_RADIO_STATE_CHANGED:
                 // This will do nothing in the radio not
                 // available case
-                setPowerStateToDesired();
+                // setPowerStateToDesired();
+                // But MTK will...
+                log("handle EVENT_RADIO_STATE_CHANGED");
+                /// M: [C2K][SVLTE] Support modem remote SIM access. @{
+                //if (shouldConfigModemRemoteAccess()) {
+                //    configModemRemoteSimAccess();
+                //    mConfigModemStatus = true;
+                //}
+                /// @}
+                if (RadioManager.isMSimModeSupport()) {
+                    log("MTK propiertary Power on flow");
+                    RadioManager.getInstance().setRadioPower(mDesiredPowerState, mPhone.getPhoneId());
+                }
+                else {
+                    // This will do nothing in the radio not
+                    // available case
+                    setPowerStateToDesired();
+                }
+                if (mCi.getRadioState() == CommandsInterface.RadioState.RADIO_ON) {
+                    setDesireRatMode(mPhone.getPhoneId());
+                }
                 pollState();
                 break;
 
@@ -359,7 +422,24 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                     return;
                 }
                 ar = (AsyncResult) msg.obj;
-                onSignalStrengthResult(ar, true);
+                // MTK
+                if ((ar.exception == null) && (ar.result != null)) {
+                    mSignalStrengthChangedRegistrants.notifyResult(
+                            new SignalStrength((SignalStrength)ar.result));
+                } else {
+                    Rlog.e(LOG_TAG, "EVENT_GET_SIGNAL_STRENGTH exception occurred", ar.exception);
+                }
+
+                // MTK SVLTE
+                if (isPhone1SVLTE()) {
+                    log("onGSMSignalStrengthResult mSvlteSST=" + mSvlteSST + " this=" + this);
+                    if (mSvlteSST != null) {
+                        setSignalStrength(ar, true);
+                        mSvlteSST.onGSMSignalStrengthResult(mSignalStrength);
+                    }
+                } else {
+                    onSignalStrengthResult(ar, true);
+                }
                 queueNextSignalStrengthPoll();
 
                 break;
@@ -426,7 +506,22 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 // we don't have to ask it
                 mDontPollSignalStrength = true;
 
-                onSignalStrengthResult(ar, true);
+                // MTK
+                if ((ar.exception == null) && (ar.result != null)) {
+                    mSignalStrengthChangedRegistrants.notifyResult(
+                            new SignalStrength((SignalStrength)ar.result));
+                }
+
+                // MTK SVLTE
+                if (isPhone1SVLTE()) {
+                    log("onGSMSignalStrengthResult mSvlteSST=" + mSvlteSST + " this=" + this);
+                    if (mSvlteSST != null) {
+                        setSignalStrength(ar, true);
+                        mSvlteSST.onGSMSignalStrengthResult(mSignalStrength);
+                    }
+                } else {
+                    onSignalStrengthResult(ar, true);
+                }
                 break;
 
             case EVENT_SIM_RECORDS_LOADED:
@@ -550,6 +645,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         // If we want it on and it's off, turn it on
         if (mDesiredPowerState
                 && mCi.getRadioState() == CommandsInterface.RadioState.RADIO_OFF) {
+            // MTK: some actions must happen before EFUN
+            RadioManager.getInstance().sendRequestBeforeSetRadioPower(true, mPhone.getPhoneId());
             mCi.setRadioPower(true, null);
         } else if (!mDesiredPowerState && mCi.getRadioState().isOn()) {
             // If it's on and available and we want it off gracefully
@@ -588,6 +685,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             mPhone.mCT.mForegroundCall.hangupIfAlive();
         }
 
+        // MTK: some actions must happen before EFUN
+        RadioManager.getInstance().sendRequestBeforeSetRadioPower(false, mPhone.getPhoneId());
         mCi.setRadioPower(false, null);
     }
 
@@ -610,6 +709,15 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         // 4) No service due to power off, aka airplane mode
         //    EXTRA_SHOW_PLMN = false
         //    EXTRA_PLMN = null
+
+        // MTK
+        if (isPhone1SVLTE()) {
+            if (!mSvlteSST.needUpdateSvlteSpn(mSS.getVoiceRegState(), 
+                                                mSS.getDataRegState(), false)) {
+                log("updateSpnDisplay: but mSvlteSST doesn't want to");
+                return;
+            }
+        }
 
         IccRecords iccRecords = mIccRecords;
         String plmn = null;
@@ -1322,7 +1430,16 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
 
             setRoamingType(mSS);
             log("Broadcasting ServiceState : " + mSS);
-            mPhone.notifyServiceStateChanged(mSS);
+            // MTK SVLTE
+            if (isPhone1SVLTE()) {
+                log("notifyServiceStateChanged mSvlteSST=" + mSvlteSST + " this=" + this);
+                if (mSvlteSST != null) {
+                    mPhone.notifyServiceStateChangedPForRegistrants(mSS);
+                    mSvlteSST.notifyServiceStateChanged(mSS);
+                }
+            } else {
+                mPhone.notifyServiceStateChanged(mSS);
+            }
         }
 
         // First notify detached, then rat changed, then attached - that's the way it
@@ -2254,5 +2371,97 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             }
         }
         mImsRegistrationOnOff = registered;
+    }
+
+    // MTK
+
+    private void setDesireRatMode(int phoneId) {
+        // For SVLTE, don't handle RAT mode here for LteDcPhone of SIM1.
+        if (isPhone1SVLTE()) {
+            return;
+        }
+        int networkType = RILConstants.NETWORK_MODE_GSM_ONLY;
+        int capabilityPhoneId = SystemProperties.getInt(PhoneConstants.CAPABILITY_SWITCH_PROP, 1);
+        //[ALPS01784188]-Start : only set preferred network type to "4/3G capability phone"
+        // Set the network type, in case the radio does not restore it.
+        //set preferred network mode to "4/3G capability phone"
+        if (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1) {
+            networkType = RILConstants.NETWORK_MODE_LTE_GSM_WCDMA;
+        } else if (mPhone.getPhoneId() == (capabilityPhoneId - 1)) {
+            networkType = PhoneFactory.calculatePreferredNetworkType(mPhone.getContext());
+        }
+        if (DBG) {
+            log("4/3G capability phone, set networkType = " + networkType
+                    + " capcapabilityPhoneId = " + capabilityPhoneId);
+        }
+        //[ALPS01784188]-End
+
+        /*
+        boolean needSetPreferredNetworkType = true;
+        if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+            try {
+                if (mServiceStateExt.isSupportRatBalancing()) {
+                    if (DBG) log("Network Type is controlled by RAT Blancing, no need to set network type");
+                    needSetPreferredNetworkType = false;
+                }
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+            }
+        }
+        */
+        // if(needSetPreferredNetworkType) {
+            mCi.setPreferredNetworkType(networkType, null);
+        // }
+    }
+
+    // MTK SVLTE
+
+    /* only used in sReceiveNitz which is not ported
+    private static int getPhoneInstanceCount() {
+        /// M: [C2K][SVLTE] SVLTE has 2 phone instances. @{
+        if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+            return TelephonyManager.getDefault().getPhoneCount() + 1;
+        }
+        return TelephonyManager.getDefault().getPhoneCount();
+        /// @}
+    }
+    */
+
+    // Support for 4G UICC card.
+    private static boolean is4GUiccCard() {
+        String cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+        Rlog.d(LOG_TAG, "is4GUicc cardType=" + cardType);
+        String appType[] = cardType.split(",");
+        for (int i = 0; i < appType.length; i++) {
+            if ("USIM".equals(appType[i])) {
+                Rlog.d(LOG_TAG, "is4GUiccCard: contain USIM");
+                return true;
+            }
+        }
+        Rlog.d(LOG_TAG, "is4GUiccCard: not contain USIM");
+        return false;
+    }
+
+    // Support modem remote SIM access.
+    private void configModemRemoteSimAccess() {
+        if (is4GUiccCard()) {
+            mCi.configModemStatus(2, 1, null);
+        } else {
+            mCi.configModemStatus(1, 1, null);
+        }
+    }
+
+    public void setSvlteServiceStateTracker(SvlteServiceStateTracker lteSST) {
+        this.mSvlteSST = lteSST;
+        log("setSvlteServiceStateTracker mSvlteSST = " + mSvlteSST + "this = " + this);
+    }
+
+    private boolean isPhone1SVLTE() {
+        log("isPhone1SVLTE FeatureOptionUtils.isCdmaLteDcSupport() = "
+                + FeatureOptionUtils.isCdmaLteDcSupport()
+                + "mPhone.getPhoneId() = " + mPhone.getPhoneId()
+                + "LTE_DC_PHONE_ID = " + SubscriptionManager.LTE_DC_PHONE_ID);
+        return FeatureOptionUtils.isCdmaLteDcSupport()
+                && mPhone.getPhoneId() == SubscriptionManager.LTE_DC_PHONE_ID;
     }
 }

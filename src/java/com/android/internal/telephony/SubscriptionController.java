@@ -44,6 +44,8 @@ import com.android.internal.telephony.dataconnection.DctController;
 import com.android.internal.telephony.dataconnection.DdsScheduler;
 import com.android.internal.telephony.dataconnection.DdsSchedulerAc;
 
+import com.mediatek.internal.telephony.cdma.FeatureOptionUtils;
+
 import android.provider.BaseColumns;
 import android.provider.Settings;
 import android.telecom.TelecomManager;
@@ -1205,6 +1207,14 @@ public class SubscriptionController extends ISub.Stub {
             return SubscriptionManager.INVALID_PHONE_INDEX;
         }
 
+        // MTK SVLTE
+        if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+            if (subId == SubscriptionManager.LTE_DC_SUBSCRIPTION_ID) {
+                logd("[getPhoneId]- subId is for LTE DC phone.");
+                return 0;
+            }
+        }
+
         if (subId >= DUMMY_SUB_ID_BASE) {
             logd("getPhoneId,  received dummy subId " + subId);
             return subId - DUMMY_SUB_ID_BASE;
@@ -1631,6 +1641,14 @@ public class SubscriptionController extends ISub.Stub {
     // FIXME: We need we should not be assuming phoneId == slotId as it will not be true
     // when there are multiple subscriptions per sim and probably for other reasons.
     public int getSubIdUsingPhoneId(int phoneId) {
+        // MTK SVLTE
+        if (FeatureOptionUtils.isCdmaLteDcSupport()) {
+            if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID) {
+                logd("[getSubIdUsingPhoneId]- phone is for LTE DC phone.");
+                return SubscriptionManager.LTE_DC_SUBSCRIPTION_ID;
+            }
+        }
+
         int[] subIds = getSubId(phoneId);
         if (subIds == null || subIds.length == 0) {
             return SubscriptionManager.INVALID_SUBSCRIPTION_ID;

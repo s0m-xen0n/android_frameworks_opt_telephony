@@ -2279,6 +2279,9 @@ public interface CommandsInterface {
      */
     public void unregisterForPhoneRatFamilyChanged(Handler h);
 
+    void setupDataCall(String radioTechnology, String profile, String apn, String user,
+            String password, String authType, String protocol, String interfaceId, Message result);
+
     public void setInitialAttachApn(String apn, String protocol, int authType, String username,
             String password, String operatorNumeric, boolean canHandleIms, Message result);
 

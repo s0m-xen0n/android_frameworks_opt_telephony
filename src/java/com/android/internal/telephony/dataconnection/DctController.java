@@ -1482,4 +1482,12 @@ public class DctController extends Handler implements IratController.OnIratEvent
             mHasPendingDataSwitch = false;
         }
     }
+
+    public boolean isActivePhone(int phoneId) {
+        /// M: [C2K][IRAT] use IRAT support slot ID instead of LTE_SUB_ID.
+        if (SvlteIratUtils.isIratSupportPhone(phoneId)) {
+            phoneId = SvlteIratUtils.getIratSupportSlotId();
+        }
+        return !mDcSwitchAsyncChannel[phoneId].isIdleSync();
+    }
 }

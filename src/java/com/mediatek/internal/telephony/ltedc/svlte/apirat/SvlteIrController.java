@@ -115,7 +115,7 @@ public class SvlteIrController {
             if (sInstance != null) {
                 throw new RuntimeException("LteDcIRController.make() should only be called once");
             }
-            if (SystemProperties.get("persist.sys.ct.ir.switcher", "0").equals("1")) {
+            if (true /*SystemProperties.get("persist.sys.ct.ir.switcher", "0").equals("1")*/) {
                 sInstance = new SvlteIrController(lteDcPhoneProxy);
                 return sInstance;
             } else {

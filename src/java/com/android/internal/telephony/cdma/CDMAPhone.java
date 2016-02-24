@@ -74,6 +74,7 @@ import com.android.internal.telephony.imsphone.ImsPhone;
 import com.android.internal.telephony.uicc.IccException;
 import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.RuimRecords;
+import com.android.internal.telephony.uicc.SIMRecords;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
@@ -705,12 +706,32 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public String getEsn() {
-        return mEsn;
+        // MTK
+        // return mEsn;
+        Rlog.d(LOG_TAG, "getEsn: mEsn=" + mEsn);
+        if (mEsn != null) {
+            if (mEsn.startsWith("0x") || mEsn.startsWith("0X")) {
+                mEsn = mEsn.substring(2).toUpperCase();
+                Rlog.d(LOG_TAG, "getEsn: normalized mEsn to " + mEsn);
+            }
+            return mEsn;
+        } else {
+            return null;
+        }
     }
 
     @Override
     public String getMeid() {
-        return mMeid;
+        // MTK
+        // return mMeid;
+        Rlog.d(LOG_TAG, "getMeid: mMeid=" + mMeid);
+        if (mMeid != null) {
+            final String normalizedMeid = mMeid.toUpperCase();
+            Rlog.d(LOG_TAG, "getMeid: normalized mMeid to " + normalizedMeid);
+            return normalizedMeid;
+        } else {
+            return null;
+        }
     }
 
     @Override
@@ -741,7 +762,16 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public String getSubscriberId() {
-        return mSST.getImsi();
+        // MTK
+        // return mSST.getImsi();
+        IccRecords r = mIccRecords.get();
+        if (r == null) {
+            log("getSubscriberId: mIccRecords is null");
+            return null;
+        }
+
+        log("getSubscriberId: IMSI is " + r.getIMSI());
+        return r.getIMSI();
     }
 
     @Override
@@ -1337,6 +1367,15 @@ public class CDMAPhone extends PhoneBase {
      * otherwise, restart Ecm timer and notify apps the timer is restarted.
      */
     void handleTimerInEmergencyCallbackMode(int action) {
+        // MTK
+        if (!mIsPhoneInEcmState) {
+            if (DBG) {
+                Rlog.e(LOG_TAG, "handleTimerInEmergencyCallbackMode, unsupported EcmState "
+                        + mIsPhoneInEcmState);
+            }
+            return;
+        }
+
         switch(action) {
         case CANCEL_ECM_TIMER:
             removeCallbacks(mExitEcmRunnable);
@@ -1347,6 +1386,9 @@ public class CDMAPhone extends PhoneBase {
                     TelephonyProperties.PROPERTY_ECM_EXIT_TIMER, DEFAULT_ECM_EXIT_TIMER_VALUE);
             postDelayed(mExitEcmRunnable, delayInMillis);
             mEcmTimerResetRegistrants.notifyResult(Boolean.FALSE);
+            /// M: c2k modify, moving notify change action when the exitecmtimer.
+            // notify change
+            sendEmergencyCallbackModeChange();
             break;
         default:
             Rlog.e(LOG_TAG, "handleTimerInEmergencyCallbackMode, unsupported action " + action);
@@ -1396,9 +1438,19 @@ public class CDMAPhone extends PhoneBase {
         }
         switch(msg.what) {
             case EVENT_RADIO_AVAILABLE: {
+                Rlog.d(LOG_TAG, "Event EVENT_RADIO_AVAILABLE");
+
+                // MTK
+                mIsRadioAvailable = true;
+                broadcastRadioAvailableState();
+
                 mCi.getBasebandVersion(obtainMessage(EVENT_GET_BASEBAND_VERSION_DONE));
 
                 mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+
+                // MTK
+                Rlog.d(LOG_TAG, "setArsiReportThreshold threshold = 1");
+                setArsiReportThreshold(2);
             }
             break;
 
@@ -1411,8 +1463,10 @@ public class CDMAPhone extends PhoneBase {
 
                 if (DBG) Rlog.d(LOG_TAG, "Baseband version: " + ar.result);
                 if (!"".equals((String)ar.result)) {
-                    setSystemProperty(TelephonyProperties.PROPERTY_BASEBAND_VERSION,
-                                      (String)ar.result);
+                    // MTK
+                    // setSystemProperty(TelephonyProperties.PROPERTY_BASEBAND_VERSION,
+                    //                   (String)ar.result);
+                    setSystemProperty("cdma.version.baseband", (String) ar.result);
                 }
             }
             break;
@@ -1453,6 +1507,18 @@ public class CDMAPhone extends PhoneBase {
 
             case EVENT_RADIO_OFF_OR_NOT_AVAILABLE:{
                 Rlog.d(LOG_TAG, "Event EVENT_RADIO_OFF_OR_NOT_AVAILABLE Received");
+
+                // MTK
+                if (!mCi.getRadioState().isAvailable()) {
+                    mIsRadioAvailable = false;
+                    broadcastRadioAvailableState();
+                }
+                Rlog.d(LOG_TAG, "Event QUERY UIM INSERTED STATUS");
+
+                ImsPhone imsPhone = mImsPhone;
+                if (imsPhone != null) {
+                    imsPhone.getServiceState().setStateOff();
+                }
             }
             break;
 
@@ -1503,6 +1569,45 @@ public class CDMAPhone extends PhoneBase {
                     AsyncResult.forMessage(onComplete, ar.result, ar.exception);
                     onComplete.sendToTarget();
                 }
+            }
+            break;
+
+            // MTK cases below
+            case EVENT_ICC_RECORD_EVENTS: {
+                ar = (AsyncResult)msg.obj;
+                processIccRecordEvents((Integer)ar.result);
+            }
+            break;
+
+            case EVENT_SET_MEID_DONE: {
+                if (DBG) {
+                    Rlog.d(LOG_TAG, "EVENT_SET_MEID_DONE");
+                }
+                // Get device identity, MEID has been changed
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception == null) {
+                    mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+                } else {
+                    if (DBG) {
+                        Rlog.w(LOG_TAG, "[CDMAPhone, EVENT_SET_MEID_DONE, exception]");
+                    }
+                }
+            }
+            break;
+
+            case EVENT_RUIM_READY: {
+                if (DBG) {
+                    Rlog.d(LOG_TAG, "CDMAPhone EVENT_RUIM_READY");
+                }
+                mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+
+                if (mUiccController != null) {
+                    mUtkService = ViaPolicyManager.getUtkService(mCi, mContext,
+                            mUiccController.getUiccCard(0));
+                    /*mUtkService = UtkService.getInstance(mCi, mContext,
+                            mUiccController.getUiccCard(0));*/
+                }
+
             }
             break;
 
@@ -1559,6 +1664,28 @@ public class CDMAPhone extends PhoneBase {
                 mUiccApplication.set(newUiccApplication);
                 mIccRecords.set(newUiccApplication.getIccRecords());
                 registerForRuimRecordEvents();
+
+                // MTK
+                newUiccApplication.registerForReady(this, EVENT_RUIM_READY, null);
+            }
+        }
+        // MTK
+        else if (newUiccApplication != null) {
+            log("Uicc application is same");
+            IccRecords oldRecords = mIccRecords.get();
+            IccRecords newRecords = newUiccApplication.getIccRecords();
+            if (oldRecords != newRecords) {
+                log("But iccrecords is different, update iccrecords");
+                if (oldRecords != null) {
+                    unregisterForRuimRecordEvents();
+                    mRuimPhoneBookInterfaceManager.updateIccRecords(null);
+                    mIccRecords.set(null);
+                }
+                if (newRecords != null) {
+                    mIccRecords.set(newRecords);
+                    registerForRuimRecordEvents();
+                    mRuimPhoneBookInterfaceManager.updateIccRecords(mIccRecords.get());
+                }
             }
         }
     }
@@ -1945,7 +2072,28 @@ public class CDMAPhone extends PhoneBase {
      * @return true for success; false otherwise.
      */
     boolean updateCurrentCarrierInProvider() {
-        return true;
+        // MTK
+        // return true;
+        if (mIccRecords.get() != null) {
+            try {
+                Uri uri = Uri.withAppendedPath(Telephony.Carriers.CONTENT_URI, "current");
+                ContentValues map = new ContentValues();
+                if (mIccRecords.get() instanceof RuimRecords) {
+                    map.put(Telephony.Carriers.NUMERIC,
+                            ((RuimRecords) mIccRecords.get()).getRUIMOperatorNumeric());
+                } else {
+                    map.put(Telephony.Carriers.NUMERIC,
+                            ((SIMRecords) mIccRecords.get()).getOperatorNumeric());
+                }
+                mContext.getContentResolver().insert(uri, map);
+                return true;
+            } catch (SQLException e) {
+                Rlog.e(LOG_TAG, "Can't store current operator", e);
+            }
+        } else {
+            Rlog.d(LOG_TAG, "updateCurrentCarrierInProvider():mIccRecords is null");
+        }
+        return false;
     }
 
     public void prepareEri() {
@@ -2080,6 +2228,28 @@ public class CDMAPhone extends PhoneBase {
      */
     public void unsetOnThreeWayEcmExitResponse(Handler h) {
         mThreeWayEcmExitRespRegistrant.clear();
+    }
+
+    private void broadcastRadioAvailableState() {
+        if (DBG) {
+            log("sendBroadcastRadioAvailable "
+                    + TelephonyIntents.ACTION_RADIO_AVAILABLE + " = " + mIsRadioAvailable);
+        }
+        Intent intent = new Intent(TelephonyIntents.ACTION_RADIO_AVAILABLE);
+        intent.putExtra(TelephonyIntents.EXTRA_RADIO_AVAILABLE_STATE, mIsRadioAvailable);
+        ActivityManagerNative.broadcastStickyIntent(intent, null, UserHandle.USER_ALL);
+    }
+
+    private void processIccRecordEvents(int eventCode) {
+        switch (eventCode) {
+            case RuimRecords.EVENT_MWI:
+                notifyMessageWaitingIndicator();
+                break;
+
+            default:
+                Rlog.e(LOG_TAG,"Unknown icc records event code " + eventCode);
+                break;
+        }
     }
 
     /**
