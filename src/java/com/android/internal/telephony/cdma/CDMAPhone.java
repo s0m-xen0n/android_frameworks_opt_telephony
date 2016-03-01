@@ -178,12 +178,23 @@ public class CDMAPhone extends PhoneBase {
     public CDMAPhone(Context context, CommandsInterface ci, PhoneNotifier notifier,
             int phoneId) {
         super("CDMA", notifier, context, ci, false, phoneId);
+
+        // MTK
+        if (CdmaFeatureOptionUtils.isMtkC2KSupport()) {
+            mGpsProcess = ViaPolicyManager.getGpsProcess(context, this, ci);
+        }
+
         initSstIcc();
         init(context, notifier);
     }
 
     protected void initSstIcc() {
-        mSST = new CdmaServiceStateTracker(this);
+        // MTK
+        if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            mSST = new CdmaServiceStateTracker(this);
+        } else {
+            mSST = new SvlteServiceStateTracker(this);
+        }
     }
 
     protected void init(Context context, PhoneNotifier notifier) {
@@ -191,7 +202,19 @@ public class CDMAPhone extends PhoneBase {
         mCT = new CdmaCallTracker(this);
         mCdmaSSM = CdmaSubscriptionSourceManager.getInstance(context, mCi, this,
                 EVENT_CDMA_SUBSCRIPTION_SOURCE_CHANGED, null);
-        mDcTracker = new DcTracker(this);
+
+        // MTK
+        if (CdmaFeatureOptionUtils.isMtkC2KSupport()) {
+            mGpsProcess.start();
+        }
+
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            // Do nothing, we will create and share DcTracker in LteDcPhoneProxy.
+            log("IRAT support, doesn't create DcTracker here.");
+        } else {
+            mDcTracker = new DcTracker(this);
+        }
+
         mRuimPhoneBookInterfaceManager = new RuimPhoneBookInterfaceManager(this);
         mSubInfo = new PhoneSubInfo(this);
         mEriManager = new EriManager(this, context, EriManager.ERI_FROM_XML);
