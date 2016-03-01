@@ -37,6 +37,9 @@ import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.ITelephonyRegistry;
 import com.android.internal.telephony.PhoneConstants;
 
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+
 import java.util.List;
 
 /**
@@ -138,6 +141,10 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     @Override
     public void notifyDataActivity(Phone sender) {
         int subId = sender.getSubId();
+        // MTK
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            subId = SvlteUtils.getSvlteSubIdBySubId(subId);
+        }
         try {
             if (mRegistry != null) {
                 mRegistry.notifyDataActivityForSubscriber(subId,
@@ -174,6 +181,24 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
         }
         ServiceState ss = sender.getServiceState();
         if (ss != null) roaming = ss.getDataRoaming();
+
+        // MTK
+        //M: ALPS01747520, get network type by sub when more than one SIM.
+        int networkType = ((telephony!=null) ? telephony.getDataNetworkType(subId) :
+                    TelephonyManager.NETWORK_TYPE_UNKNOWN);
+
+
+        // M:[C2K][IRAT] Show right type for PS network type for IRAT.
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            subId = SvlteUtils.getSvlteSubIdBySubId(sender.getSubId());
+            log("[IRAT] update Svlte sub:" + subId);
+        }
+
+        //M: For debug
+        if (DBG) {
+            log("doNotifyDataConnection " + "apnType=" + apnType + ",networkType="
+                + networkType + ", state=" + state);
+        }
 
         try {
             if (mRegistry != null) {
@@ -472,4 +497,32 @@ public class DefaultPhoneNotifier implements PhoneNotifier {
     private void log(String s) {
         Rlog.d(LOG_TAG, s);
     }
+
+    // MTK
+
+    ///M:Add for SVLTE. @{
+    /**
+     * Notify the Service state change for svlte.
+     * @param sender The phone to notify service state change
+     * @param svlteServiceState The svlte service state will be notified.
+     */
+    @Override
+    public void notifySvlteServiceStateChanged(Phone sender,
+            ServiceState svlteServiceState) {
+        int phoneId = sender.getPhoneId();
+        int subId = sender.getSubId();
+
+        Rlog.d(LOG_TAG, "notifySvLteServiceStateChanged: mRegistry="
+                + mRegistry + " ss=" + svlteServiceState + " sender=" + sender
+                + " phoneId=" + phoneId + " subId=" + subId);
+        try {
+            if (mRegistry != null) {
+                mRegistry.notifyServiceStateForPhoneId(phoneId, subId,
+                        svlteServiceState);
+            }
+        } catch (RemoteException ex) {
+            // system process is dead
+        }
+    }
+    /// @}
 }

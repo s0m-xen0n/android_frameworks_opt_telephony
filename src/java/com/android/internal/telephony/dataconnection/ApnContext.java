@@ -18,19 +18,25 @@ package com.android.internal.telephony.dataconnection;
 
 import android.app.PendingIntent;
 import android.content.Context;
+import android.net.ConnectivityManager; //M: ePDG support
 import android.net.NetworkConfig;
+import android.net.NetworkInfo; //M: ePDG support
 import android.telephony.Rlog;
 import android.text.TextUtils;
 
 import com.android.internal.R;
 import com.android.internal.telephony.DctConstants;
 import com.android.internal.telephony.Phone;
+import com.android.internal.telephony.PhoneConstants;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+
+//VoLTE
+import com.mediatek.internal.telephony.DefaultBearerConfig;
 
 /**
  * Maintain the Apn context
@@ -77,6 +83,34 @@ public class ApnContext {
 
     private final DcTrackerBase mDcTracker;
 
+    // MTK
+    /**
+     * Used to check if conditions (new RAT) are resulting in a new list which warrants a retry.
+     * Set in the last trySetupData call.
+     */
+    // private ArrayList<ApnSetting> mOriginalWaitingApns = null;
+
+    /**
+     * Remember this as a change in this value to a more permissive state
+     * should cause us to retry even permanent failures
+     */
+    // private boolean mConcurrentVoiceAndDataAllowed;
+
+     /*
+      * for VoLte Default Bearer used
+      */
+    DefaultBearerConfig mDefaultBearerConfig;
+
+    /**
+      * To decrease the time of unused apn type.
+      */
+    private boolean mNeedNotify;
+
+    /**
+    * The connection type of APN.
+    */
+    private final int mNetType;
+
     public ApnContext(Context context, String apnType, String logTag, NetworkConfig config,
             DcTrackerBase tracker) {
         mContext = context;
@@ -89,6 +123,14 @@ public class ApnContext {
         priority = config.priority;
         LOG_TAG = logTag;
         mDcTracker = tracker;
+
+        // MTK
+        // VoLTE
+        mDefaultBearerConfig = new DefaultBearerConfig();
+        mNeedNotify = needNotifyType(apnType);
+
+        // M: ePDG
+        mNetType = config.type;
     }
 
     public String getApnType() {
@@ -127,6 +169,8 @@ public class ApnContext {
 
     public synchronized void setWaitingApns(ArrayList<ApnSetting> waitingApns) {
         mWaitingApns = waitingApns;
+        // MTK
+        // mOriginalWaitingApns = new ArrayList<ApnSetting>(waitingApns);
         mWaitingApnsPermanentFailureCountDown.set(mWaitingApns.size());
     }
 
@@ -159,6 +203,21 @@ public class ApnContext {
     public synchronized ArrayList<ApnSetting> getWaitingApns() {
         return mWaitingApns;
     }
+
+    // MTK
+    /*
+    public synchronized ArrayList<ApnSetting> getOriginalWaitingApns() {
+        return mOriginalWaitingApns;
+    }
+
+    public synchronized void setConcurrentVoiceAndDataAllowed(boolean allowed) {
+        mConcurrentVoiceAndDataAllowed = allowed;
+    }
+
+    public synchronized boolean isConcurrentVoiceAndDataAllowed() {
+        return mConcurrentVoiceAndDataAllowed;
+    }
+    */
 
     public synchronized void setState(DctConstants.State s) {
         if (DBG) {
@@ -279,5 +338,60 @@ public class ApnContext {
 
     public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
         pw.println("ApnContext: " + this.toString());
+    }
+
+    // MTK
+
+    //VoLTE [start]
+    public DefaultBearerConfig getDefaultBearerConfig() {
+        return mDefaultBearerConfig;
+    }
+
+    public void setDefaultBearerConfig(DefaultBearerConfig defaultBearerConfig) {
+        mDefaultBearerConfig.copyFrom(defaultBearerConfig);
+    }
+
+    public boolean isDefaultBearerConfigValid() {
+        return (0 == mDefaultBearerConfig.mIsValid) ? false : true;
+    }
+
+    public void resetDefaultBearerConfig() {
+        mDefaultBearerConfig.reset();
+    }
+    //VoLTE [end]
+
+    //MTK Start: Check need notify or not
+    private boolean needNotifyType(String apnTypes) {
+        if (apnTypes.equals(PhoneConstants.APN_TYPE_DM)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_WAP)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_NET)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_CMMAIL)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_TETHERING)
+                || apnTypes.equals(PhoneConstants.APN_TYPE_RCSE)) {
+            return false;
+        }
+        return true;
+    }
+
+    public boolean isNeedNotify() {
+        if (DBG) {
+            log("Current apn tpye:" + mApnType + " isNeedNotify" + mNeedNotify);
+        }
+        return mNeedNotify;
+    }
+    //MTK End: Check need notify or not
+
+    public boolean isHandover() {
+        ConnectivityManager cm = (ConnectivityManager) mContext.getSystemService(
+                Context.CONNECTIVITY_SERVICE);
+        NetworkInfo nwInfo = cm.getNetworkInfo(mNetType);
+        log("Check handover with type:" + mNetType);
+        if (nwInfo != null && nwInfo.isConnected()) {
+            if (DBG) {
+                log(mApnType + ":" + mNetType + ":" + nwInfo);
+            }
+            return true;
+        }
+        return false;
     }
 }

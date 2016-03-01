@@ -91,4 +91,11 @@ public class DcTesterDeactivateAll {
     private static void log(String s) {
         Rlog.d(LOG_TAG, s);
     }
+
+    // MTK
+
+    void updatePhone(PhoneBase phone) {
+        log("DcTesterDeactivateAll, updatePhone");
+        mPhone = phone;
+    }
 }

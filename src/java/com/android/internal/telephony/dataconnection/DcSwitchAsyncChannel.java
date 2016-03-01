@@ -47,7 +47,11 @@ public class DcSwitchAsyncChannel extends AsyncChannel {
     static final int EVENT_DATA_ATTACHED = BASE + 10;
     static final int EVENT_DATA_DETACHED = BASE + 11;
 
-    private static final int CMD_TO_STRING_COUNT = EVENT_DATA_DETACHED - BASE + 1;
+    // MTK
+    static final int REQ_CONFIRM_PREDETACH = BASE + 12;
+    static final int RSP_CONFIRM_PREDETACH = BASE + 13;
+
+    private static final int CMD_TO_STRING_COUNT = RSP_CONFIRM_PREDETACH - BASE + 1;
     private static String[] sCmdToString = new String[CMD_TO_STRING_COUNT];
     static {
         sCmdToString[REQ_CONNECT - BASE] = "REQ_CONNECT";
@@ -62,22 +66,36 @@ public class DcSwitchAsyncChannel extends AsyncChannel {
         sCmdToString[RSP_IS_IDLE_OR_DETACHING_STATE - BASE] = "RSP_IS_IDLE_OR_DETACHING_STATE";
         sCmdToString[EVENT_DATA_ATTACHED - BASE] = "EVENT_DATA_ATTACHED";
         sCmdToString[EVENT_DATA_DETACHED - BASE] = "EVENT_DATA_DETACHED";
+        // MTK
+        sCmdToString[REQ_CONFIRM_PREDETACH - BASE] = "REQ_CONFIRM_PREDETACH";
+        sCmdToString[RSP_CONFIRM_PREDETACH - BASE] = "RSP_CONFIRM_PREDETACH";
     }
 
     public static class RequestInfo {
         boolean executed;
         NetworkRequest request;
         int priority;
+        // MTK
+        int mGId;
+        int phoneId;
 
         public RequestInfo(NetworkRequest request, int priority) {
+            this(request, priority, 0);
+        }
+
+        public RequestInfo(NetworkRequest request, int priority, int gid) {
             this.request = request;
             this.priority = priority;
+            this.mGId = gid;
         }
 
         @Override
         public String toString() {
             return "[ request=" + request + ", executed=" + executed +
-                ", priority=" + priority + "]";
+                ", priority=" + priority +
+                // MTK
+                ", gid=" + mGId +
+                ", phoneId=" + phoneId + "]";
         }
     }
 
@@ -197,6 +215,28 @@ public class DcSwitchAsyncChannel extends AsyncChannel {
 
     private void log(String s) {
         Rlog.d(LOG_TAG, "[DcSwitchAsyncChannel-" + tagId + "]: " + s);
+    }
+
+    // MTK
+
+    private int rspConfirmPreDetachSync(Message response) {
+        int retVal = response.arg1;
+        if (DBG) {
+            log("rspConnect=" + retVal);
+        }
+        return retVal;
+    }
+
+    public int confirmPreDetachSync() {
+        Message response = sendMessageSynchronously(REQ_CONFIRM_PREDETACH);
+        if ((response != null) && (response.what == RSP_CONFIRM_PREDETACH)) {
+            return rspConfirmPreDetachSync(response);
+        } else {
+            if (DBG) {
+                log("preCheckDoneSync error response=" + response);
+            }
+            return PhoneConstants.APN_REQUEST_FAILED;
+        }
     }
 
 }

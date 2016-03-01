@@ -129,6 +129,11 @@ public final class UsimServiceTable extends IccServiceTable {
         return super.isAvailable(service.ordinal());
     }
 
+    // MTK
+    public boolean isAvailable(int service) {
+        return super.isAvailable(service);
+    }
+
     @Override
     protected String getTag() {
         return "UsimServiceTable";

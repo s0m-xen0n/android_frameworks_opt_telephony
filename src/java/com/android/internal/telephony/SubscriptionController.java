@@ -57,6 +57,8 @@ import android.util.Log;
 
 import com.android.internal.telephony.IccCardConstants.State;
 
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.NumberFormatException;
@@ -164,6 +166,29 @@ public class SubscriptionController extends ISub.Stub {
 
     private DdsScheduler mScheduler;
     private DdsSchedulerAc mSchedulerAc;
+
+    // MTK
+    private static final int EVENT_WRITE_MSISDN_DONE = 2;  // xen0n
+    protected boolean mSuccess;
+    private boolean mIsOP01 = false;
+    private boolean mIsReady = false;
+    protected Handler mHandler = new Handler() {
+        @Override
+        public void handleMessage(Message msg) {
+            AsyncResult ar;
+
+            switch (msg.what) {
+                case EVENT_WRITE_MSISDN_DONE:
+                    ar = (AsyncResult) msg.obj;
+                    synchronized (mLock) {
+                        mSuccess = (ar.exception == null);
+                        if (DBG) logd("EVENT_WRITE_MSISDN_DONE, mSuccess = " + mSuccess);
+                        mLock.notifyAll();
+                    }
+                    break;
+            }
+        }
+    };
 
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
@@ -1523,11 +1548,12 @@ public class SubscriptionController extends ISub.Stub {
         mContext.sendStickyBroadcastAsUser(intent, UserHandle.ALL);
     }
 
+    // MTK needs it public
     /* Sets the default subscription. If only one sub is active that
      * sub is set as default subId. If two or more  sub's are active
      * the first sub is set as default subscription
      */
-    private void setDefaultFallbackSubId(int subId) {
+    public void setDefaultFallbackSubId(int subId) {
         if (subId == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) {
             throw new RuntimeException("setDefaultSubId called with DEFAULT_SUB_ID");
         }
@@ -2092,4 +2118,178 @@ public class SubscriptionController extends ISub.Stub {
             Binder.restoreCallingIdentity(token);
         }
     }
+
+    // MTK
+
+    /**
+     * Set phone number by subId.
+     * @param number the phone number of the SIM
+     * @param subId the unique SubInfoRecord index in database
+     * @param writeToSim should write to SIM at the same time
+     * @return the number of records updated
+     */
+    public int setDisplayNumber(String number, int subId, boolean writeToSim) {
+        if (DBG) logd("[setDisplayNumber]+ number:" + number + " subId:" + subId
+                + ", writeToSim:" + writeToSim);
+        enforceSubscriptionPermission();
+
+        validateSubId(subId);
+        int result = 0;
+        int phoneId = getPhoneId(subId);
+
+        if (number == null || phoneId < 0 ||
+                phoneId >= TelephonyManager.getDefault().getPhoneCount()) {
+            logd("[setDispalyNumber]- fail");
+            return -1;
+        }
+        ContentValues value = new ContentValues(1);
+        value.put(SubscriptionManager.NUMBER, number);
+        if (DBG) logd("[setDisplayNumber]- number:" + number + " set");
+
+        if (writeToSim) {
+            Phone phone = sProxyPhones[phoneId];
+            String alphaTag = TelephonyManager.getDefault().getLine1AlphaTagForSubscriber(subId);
+
+            synchronized (mLock) {
+                mSuccess = false;
+                Message response = mHandler.obtainMessage(EVENT_WRITE_MSISDN_DONE);
+
+                phone.setLine1Number(alphaTag, number, response);
+
+                try {
+                    mLock.wait();
+                } catch (InterruptedException e) {
+                    loge("interrupted while trying to write MSISDN");
+                }
+            }
+        }
+
+        if (mSuccess || !writeToSim) {
+            result = mContext.getContentResolver().update(SubscriptionManager.CONTENT_URI, value,
+                    SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID + "=" + Long.toString(subId),
+                    null);
+            if (DBG) logd("[setDisplayNumber]- update result :" + result);
+
+            // xen0n: mimic mActiveList the CM way
+            List<SubscriptionInfo> subList = getActiveSubscriptionInfoList();
+            if (subList != null) {
+                for (SubscriptionInfo si : subList) {
+                    if (si.getSubscriptionId() == subId) {
+                        si.setNumber(number);
+                    }
+                }
+            }
+            notifySubscriptionInfoChanged();
+        }
+
+        return result;
+    }
+
+    /**
+     * Get the SubscriptionInfo with the subId key
+     * @param subId The unique SubscriptionInfo key in database
+     * @return SubscriptionInfo, maybe null if not found
+     */
+    @Override
+    public SubscriptionInfo getSubscriptionInfo(int subId) {
+        enforceSubscriptionPermission();
+
+        if (!SubscriptionManager.isValidSubscriptionId(subId)) {
+            logd("[getSubscriptionInfo]- invalid subId, subId =" + subId);
+            return null;
+        }
+        Cursor cursor = mContext.getContentResolver().query(SubscriptionManager.CONTENT_URI,
+                null, SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID + "=?",
+                new String[] {Long.toString(subId)}, null);
+        try {
+            if (cursor != null) {
+                if (cursor.moveToFirst()) {
+                    SubscriptionInfo si = getSubInfoRecord(cursor);
+                    if (si != null) {
+                        if (DBG) logd("[getSubscriptionInfo]+ subId=" + subId + ", subInfo=" + si);
+                        return si;
+                    }
+                }
+            } else {
+                logd("[getSubscriptionInfo]- Query fail");
+            }
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        if (DBG)logd("[getSubscriptionInfo]- subId=" + subId + ",subInfo=null");
+        return null;
+    }
+
+    /**
+     * Get the active SubscriptionInfo associated with the iccId.
+     * @param iccId the IccId of SIM card
+     * @return SubscriptionInfo, maybe null if not found
+     */
+    @Override
+    public SubscriptionInfo getSubscriptionInfoForIccId(String iccId) {
+        enforceSubscriptionPermission();
+
+        if (iccId == null) {
+            logd("[getSubscriptionInfoForIccId]- null iccid");
+            return null;
+        }
+        Cursor cursor = mContext.getContentResolver().query(SubscriptionManager.CONTENT_URI,
+                null, SubscriptionManager.ICC_ID + "=?", new String[] {iccId}, null);
+
+        try {
+            if (cursor != null) {
+                while (cursor.moveToNext()) {
+                    SubscriptionInfo si = getSubInfoRecord(cursor);
+                    if (si != null) {
+                        if (DBG) logd("[getSubscriptionInfoForIccId]+ iccId=" + iccId
+                            + ", subInfo=" + si);
+                        return si;
+                    }
+                }
+            } else {
+                logd("[getSubscriptionInfoForIccId]- Query fail");
+            }
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+
+        if (DBG) logd("[getSubscriptionInfoForIccId]- iccId=" + iccId + ",subInfo=null");
+        return null;
+    }
+
+    /**
+     * Set deafult data sub ID without invoking capability switch.
+     * @param subId the default data sub ID
+     */
+    public void setDefaultDataSubIdWithoutCapabilitySwitch(int subId) {
+        if (subId == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) {
+            throw new RuntimeException("setDefaultDataSubId called with DEFAULT_SUB_ID");
+        }
+        if (DBG) {
+            logdl("[setDefaultDataSubId] subId=" + subId);
+        }
+        // FIXME is this still needed?
+        updateAllDataConnectionTrackers();
+
+        Settings.Global.putInt(mContext.getContentResolver(),
+                Settings.Global.MULTI_SIM_DATA_CALL_SUBSCRIPTION, subId);
+        broadcastDefaultDataSubIdChanged(subId);
+    }
+
+    // MTK-START
+    public boolean isReady() {
+        logd("[isReady]- " + mIsReady);
+        return mIsReady;
+    }
+
+    public void setReadyState(boolean isReady) {
+        logd("[setReadyState]- " + isReady);
+        mIsReady = isReady;
+    }
+    // MTK-END
 }

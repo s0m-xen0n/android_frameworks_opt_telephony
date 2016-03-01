@@ -45,6 +45,7 @@ import android.telephony.CellInfoGsm;
 import android.telephony.CellInfoLte;
 import android.telephony.CellInfoWcdma;
 import android.telephony.CellLocation;
+import android.telephony.RadioAccessFamily;
 import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
@@ -54,10 +55,15 @@ import android.telephony.gsm.GsmCellLocation;
 import android.text.TextUtils;
 import android.util.EventLog;
 import android.util.TimeUtils;
+import android.view.Display;
+
+import com.android.ims.ImsException;
+import com.android.ims.ImsManager;
 
 import com.android.internal.telephony.CommandException;
 import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.EventLogTags;
+import com.android.internal.telephony.IccCardConstants;
 import com.android.internal.telephony.MccTable;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.ProxyController;
@@ -71,12 +77,24 @@ import com.android.internal.telephony.TelephonyProperties;
 import com.android.internal.telephony.dataconnection.DcTrackerBase;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccRecords;
+import com.android.internal.telephony.uicc.IccRefreshResponse;
+import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.telephony.uicc.SIMRecords;
 import com.android.internal.telephony.uicc.SpnOverride;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
 import com.android.internal.telephony.PhoneConstants;
+
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+import com.mediatek.internal.telephony.RadioManager;
+import com.mediatek.internal.telephony.ltedc.LteDcPhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteModeController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteRatController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+import com.mediatek.internal.telephony.RadioCapabilitySwitchUtil;
+import com.mediatek.internal.telephony.uicc.SvlteUiccUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -169,6 +187,142 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
     static final int PS_NOTIFICATION = 888;  // Id to update and cancel PS restricted
     static final int CS_NOTIFICATION = 999;  // Id to update and cancel CS restricted
 
+    // MTK
+    private int gprsState = ServiceState.STATE_OUT_OF_SERVICE;
+    private int newGPRSState = ServiceState.STATE_OUT_OF_SERVICE;
+
+    private String mHhbName = null;
+    private String mCsgId = null;
+    private int mFemtocellDomain = 0;
+
+    /* mtk01616 ALPS00236452: manufacturer maintained table for specific operator with multiple PLMN id */
+    // ALFMS00040828 - add "46008"
+    public static final String[][] customEhplmn = {{"46000", "46002", "46007", "46008"},
+                                       {"45400", "45402", "45418"},
+/* Vanzo:yujianpeng on: Sat, 18 Apr 2015 12:02:23 +0800
+ * implement #107226 MCC=520 no roming
+ */
+                                       {"52000","52001","52002","52003","52004","52005","52010","52015","52018","52020","52023","52088","52099"},
+// End of Vanzo:yujianpeng
+                                       {"46001", "46009"},
+                                       {"45403", "45404"},
+                                       {"45412", "45413"},
+                                       {"45416", "45419"},
+                                       {"45501", "45504"},
+                                       {"45503", "45505"},
+                                       {"45002", "45008"},
+                                       {"52501", "52502"},
+                                       {"43602", "43612"},
+                                       {"52010", "52099"},
+                                       {"24001", "24005"},
+                                       {"26207", "26208"},
+/* Vanzo:fangfangjie on: Thu, 22 May 2014 09:54:54 +0800
+ * implement #80236 fix roam between operators
+ */
+                                       {"22603","22606"},
+                                       {"20815","20801"},
+// End of Vanzo: fangfangjie
+                                       {"23430", "23431", "23432", "23433", "23434"},
+                                       {"72402", "72403", "72404"},
+                                       {"72406", "72410", "72411", "72423"},
+                                       {"72432", "72433", "72434"},
+                                       {"31026", "31031", "310160", "310200", "310210", "310220", "310230", "310240", "310250", "310260", "310270", "310280", "311290", "310300", "310310", "310320", "311330", "310660", "310800"},
+                                       {"310150", "310170", "310380", "310410"},
+                                       {"31033", "310330"}};
+
+    public boolean dontUpdateNetworkStateFlag = false;
+
+//MTK-START [mtk03851][111124]MTK added
+    protected static final int EVENT_SET_AUTO_SELECT_NETWORK_DONE = 50;
+    /** Indicate the first radio state changed **/
+    private boolean mFirstRadioChange = true;
+    private boolean mIsRatDowngrade = false;
+    //[ALPS01544581]-START
+    // backup data network type when mIsRatDowngrade is set.
+    private int mBackupDataNetworkType = ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN;
+    //[ALPS01544581]-END
+
+    //[ALPS01785625]-START: fix network type icon display abnormanl
+    private int mLastCsNetworkType = ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN;
+    private int mLastPsNetworkType = ServiceState.RIL_RADIO_TECHNOLOGY_UNKNOWN;
+    //[ALPS01785625]-END: fix network type icon display abnormanl
+    private int explict_update_spn = 0;
+
+
+    private String mLastRegisteredPLMN = null;
+    private String mLastPSRegisteredPLMN = null;
+
+    private boolean mEverIVSR = false;  /* ALPS00324111: at least one chance to do IVSR  */
+
+    //MTK-ADD: for for CS not registered , PS regsitered (ex: LTE PS only mode or 2/3G PS only SIM card or CS domain network registeration temporary failure
+    private boolean isCsInvalidCard = false;
+
+    // private IServiceStateExt mServiceStateExt;
+
+    private String mLocatedPlmn = null;
+    private int mPsRegState = ServiceState.STATE_OUT_OF_SERVICE;
+
+    /** [ALPS01558804] Add notification id for using some spcial icc card*/
+    private String mSimType = "";
+    //MTK-START : [ALPS01262709] update TimeZone by MCC/MNC
+    /* manufacturer maintained table for specific timezone
+         with multiple timezone of country in time_zones_by_country.xml */
+    private String[][] mTimeZoneIdOfCapitalCity = {{"au", "Australia/Sydney"},
+                                                   {"br", "America/Sao_Paulo"},
+                                                   {"ca", "America/Toronto"},
+                                                   {"cl", "America/Santiago"},
+                                                   {"es", "Europe/Madrid"},
+                                                   {"fm", "Pacific/Ponape"},
+                                                   {"gl", "America/Godthab"},
+                                                   {"id", "Asia/Jakarta"},
+                                                   {"kz", "Asia/Almaty"},
+                                                   {"mn", "Asia/Ulaanbaatar"},
+                                                   {"mx", "America/Mexico_City"},
+                                                   {"pf", "Pacific/Tahiti"},
+                                                   {"pt", "Europe/Lisbon"},
+                                                   {"ru", "Europe/Moscow"},
+                                                   {"us", "America/New_York"}
+                                                  };
+    //MTK-END [ALPS01262709]
+    /* manufacturer maintained table for the case that
+       MccTable.defaultTimeZoneForMcc() returns unexpected timezone */
+    private String[][] mTimeZoneIdByMcc = {{"460", "Asia/Shanghai"},
+                                           {"404", "Asia/Calcutta"},
+                                           {"454", "Asia/Hong_Kong"}
+                                          };
+
+    private boolean mIsImeiLock = false;
+
+    // IMS
+    private int mImsRegInfo = 0;
+    private int mImsExtInfo = 0;
+
+    //[ALPS01132085] for NetworkType display abnormal
+    //[ALPS01497861] when ipo reboot this value must be ture
+    //private boolean mIsScreenOn = true;  //[ALPS01810775,ALPS01868743]removed
+    private boolean mIsForceSendScreenOnForUpdateNwInfo = false;
+
+    // private static Timer mCellInfoTimer = null;
+
+    /// M: [C2K][SVLTE]. @{
+    // Support modem remote SIM access.
+    private boolean mConfigModemStatus = false;
+    // Support 3gpp UICC card type.
+    static final String[] PROPERTY_RIL_UICC_3GPP_TYPE = {
+        "gsm.ril.uicc.3gpptype",
+        "gsm.ril.uicc.3gpptype.2",
+        "gsm.ril.uicc.3gpptype.3",
+        "gsm.ril.uicc.3gpptype.4",
+    };
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    protected SvlteServiceStateTracker mSvlteSST;
+    protected boolean bHasDetachedDuringPolling = false;
+
     private BroadcastReceiver mIntentReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -186,8 +340,180 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 DcTrackerBase dcTracker = mPhone.mDcTracker;
                 powerOffRadioSafely(dcTracker);
             }
+            // MTK
+            else if (intent.getAction().equals(
+                    TelephonyIntents.ACTION_SET_RADIO_CAPABILITY_DONE)) {
+                if (DBG) {
+                    log("Received Intent ACTION_SET_RADIO_CAPABILITY_DONE");
+                }
+                ArrayList<RadioAccessFamily> newPhoneRcList =
+                        intent.getParcelableArrayListExtra(
+                        TelephonyIntents.EXTRA_RADIO_ACCESS_FAMILY);
+                if (newPhoneRcList == null || newPhoneRcList.size() == 0) {
+                    if (DBG) {
+                        log("EXTRA_RADIO_ACCESS_FAMILY not present.");
+                    }
+                } else {
+                    onSetPhoneRCDone(newPhoneRcList);
+                }
+            } else if (intent.getAction().equals(Intent.ACTION_SCREEN_ON)) {
+                log("ACTION_SCREEN_ON");
+                //[ALPS02042805] pollState after RILJ noitfy URC when screen on 
+                //pollState();
+                log("set explict_update_spn = 1");
+                explict_update_spn = 1;
+                /*
+                if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+                    try {
+                        if (mServiceStateExt.needEMMRRS()) {
+                            if (isCurrentPhoneDataConnectionOn()) {
+                                getEINFO(EVENT_ENABLE_EMMRRS_STATUS);
+                            }
+                        }
+                    } catch (RuntimeException e) {
+                        e.printStackTrace();
+                    }
+                }
+                */
+            } else if (intent.getAction().equals(Intent.ACTION_SCREEN_OFF)) {
+                log("ACTION_SCREEN_OFF");
+                /*
+                if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+                    try {
+                        if (mServiceStateExt.needEMMRRS()) {
+                            if (isCurrentPhoneDataConnectionOn()) {
+                                getEINFO(EVENT_DISABLE_EMMRRS_STATUS);
+                            }
+                        }
+                    } catch (RuntimeException e) {
+                        e.printStackTrace();
+                    }
+                }
+                */
+            } else if (intent.getAction().equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) {
+                log("ACTION_SIM_STATE_CHANGED");
+
+                String simState = IccCardConstants.INTENT_VALUE_ICC_UNKNOWN;
+
+                int slotId = intent.getIntExtra(PhoneConstants.PHONE_KEY, -1);
+                if (slotId == mPhone.getPhoneId()) {
+                    simState = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+                    log("SIM state change, slotId: " + slotId + " simState[" + simState + "]");
+                }
+
+                //[ALPS01558804] MTK-START: send notification for using some spcial icc card
+                if ((simState.equals(IccCardConstants.INTENT_VALUE_ICC_READY)) && (mSimType.equals(""))) {
+                    mSimType = PhoneFactory.getPhone(mPhone.getPhoneId()).getIccCard().getIccCardType();
+
+                    log("SimType= "+mSimType);
+
+                    if ((mSimType != null) && (!mSimType.equals(""))) {
+                        if (mSimType.equals("SIM") || mSimType.equals("USIM")) {
+                            /*
+                            if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+                                try {
+                                    if (mServiceStateExt.needIccCardTypeNotification(mSimType)) {
+                                    //[ALPS01600557] - start : need to check 3G Capability SIM
+                                        if (TelephonyManager.getDefault().getPhoneCount() > 1) {
+                                            int capabilityPhoneId = Integer.valueOf(SystemProperties.get(PhoneConstants.PROPERTY_CAPABILITY_SWITCH, "1"));
+                                            log("capabilityPhoneId="+capabilityPhoneId);
+                                            if (mPhone.getPhoneId() == (capabilityPhoneId - 1)) {
+                                                setSpecialCardTypeNotification(mSimType, 0, 0);
+                                            }
+                                        } else {
+                                            setSpecialCardTypeNotification(mSimType, 0, 0);
+                                        }
+                                    }
+                                } catch (RuntimeException e) {
+                                      e.printStackTrace();
+                                }
+                            }
+                            */
+                        }
+                    }
+                }
+
+                /* [ALPS01602110] START */
+                if (slotId == mPhone.getPhoneId()
+                        && simState.equals(IccCardConstants.INTENT_VALUE_ICC_IMSI)) {
+                    setDeviceRatMode(slotId);
+                }
+                /* [ALPS01602110] END */
+
+                if (simState.equals(IccCardConstants.INTENT_VALUE_ICC_ABSENT) ||
+                    simState.equals(IccCardConstants.INTENT_VALUE_ICC_NOT_READY)) {
+                    mSimType = "";
+                    log("cancel notification for special sim card when SIM state is absent");
+                    /*
+                    NotificationManager notificationManager = (NotificationManager)
+                            context.getSystemService(Context.NOTIFICATION_SERVICE);
+                    notificationManager.cancel(SPECIAL_CARD_TYPE_NOTIFICATION);
+                    */
+
+                    //[ALPS01825832] reset flag
+                    // MTK TODO
+                    // setReceivedNitz(mPhone.getPhoneId(), false);
+                    //[ALPS01839778] reset flag for user change SIM card
+                    mLastRegisteredPLMN = null;
+                    mLastPSRegisteredPLMN = null;
+
+                    //[ALPS01509553]-start:reset flag when sim plug-out
+                    if (simState.equals(IccCardConstants.INTENT_VALUE_ICC_ABSENT)) {
+                        log("clear dontUpdateNetworkStateFlag when sim absent");
+                        dontUpdateNetworkStateFlag = false;
+                    }
+                    //[ALPS01509553]-end
+                }
+                //[ALPS01558804] MTK-END: send notification for using some special icc card
+            } else if (intent.getAction().equals(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED)) {
+                /* ALPS01845510: force notify service state changed to handle service state changed happend during sub info not ready short period  */
+                log("ACTION_SUBINFO_RECORD_UPDATED force notifyServiceStateChanged: "+mSS);
+                ///M:svlte service state notify.@{
+                notifyServiceStateChanged();
+                ///@}
+                updateSpnDisplay(/*true*/);  // xen0n: fix build
+            } else if (intent.getAction().equals(TelephonyIntents.ACTION_RADIO_TECHNOLOGY_CHANGED)) {
+                int majorPhoneId = RadioCapabilitySwitchUtil.getMainCapabilityPhoneId();
+                int currentPhoneId = mPhone.getPhoneId();
+                if (currentPhoneId == majorPhoneId) {
+                    String phoneType = intent.getStringExtra(PhoneConstants.PHONE_NAME_KEY);
+                    log("phoneType: " + phoneType);
+                    if (phoneType.equals("CdmaLteDc")) {
+                        log("CdmaLteDc mode");
+                        setDeviceRatMode(currentPhoneId);
+                    }
+                }
+                dontUpdateNetworkStateFlag = false;
+                pollState();
+                ///M: Add for SVLTE, SVLTE->CSFB, fix show roaming issue.@{
+                if (!isInSvlteMode()) {
+                    log("Radio Tech mode changed to CSFB, notify signal strength");
+                    mPhoneBase.notifySignalStrength();
+                }
+                /// @}
+            } else if (intent.getAction().equals(ImsManager.ACTION_IMS_STATE_CHANGED)) {
+                if (mSS.getVoiceRegState() == ServiceState.STATE_POWER_OFF) {
+                    updateSpnDisplay();
+                }
+            }
         }
     };
+
+    // MTK
+    /// M: Simulate IMS Registration @{
+    private boolean mImsRegistry = false;
+    private final BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            mImsRegistry = intent.getBooleanExtra("registry", false);
+            Rlog.w(LOG_TAG, "Simulate IMS Registration: " + mImsRegistry);
+            int[] result = new int[] {
+                (mImsRegistry ? 1 : 0),
+                15 };
+            AsyncResult ar = new AsyncResult(null, result, null);
+            sendMessage(obtainMessage(EVENT_IMS_REGISTRATION_INFO, ar));
+        }
+    };
+    /// @}
 
     private ContentObserver mAutoTimeObserver = new ContentObserver(new Handler()) {
         @Override
@@ -202,6 +528,37 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         public void onChange(boolean selfChange) {
             Rlog.i("GsmServiceStateTracker", "Auto time zone state changed");
             revertToNitzTimeZone();
+        }
+    };
+
+    // MTK
+    private ContentObserver mDataConnectionSettingObserver = new ContentObserver(new Handler()) {
+        @Override
+        public void onChange(boolean selfChange) {
+            log("Data Connection Setting changed");
+            /*
+            if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+                try {
+                    if (mServiceStateExt.needEMMRRS()) {
+                        if (isCurrentPhoneDataConnectionOn()) {
+                            getEINFO(EVENT_ENABLE_EMMRRS_STATUS);
+                        } else {
+                            getEINFO(EVENT_DISABLE_EMMRRS_STATUS);
+                        }
+                    }
+                } catch (RuntimeException e) {
+                        e.printStackTrace();
+                }
+            }
+            */
+        }
+    };
+
+    private ContentObserver mMsicFeatureConfigObserver = new ContentObserver(new Handler()) {
+        @Override
+        public void onChange(boolean selfChange) {
+            Rlog.i("GsmServiceStateTracker", "Msic Feature Config has changed");
+            pollState();
         }
     };
 
@@ -237,6 +594,10 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         mCr.registerContentObserver(
                 Settings.Global.getUriFor(Settings.Global.AUTO_TIME_ZONE), true,
                 mAutoTimeZoneObserver);
+        // MTK
+        mCr.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.TELEPHONY_MISC_FEATURE_CONFIG), true,
+                mMsicFeatureConfigObserver);
 
         setSignalStrengthDefaultValues();
 
@@ -248,7 +609,30 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         filter = new IntentFilter();
         Context context = phone.getContext();
         filter.addAction(ACTION_RADIO_OFF);
+        // MTK
+        filter.addAction(TelephonyIntents.ACTION_SET_RADIO_CAPABILITY_DONE);
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        filter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        filter.addAction(TelephonyIntents.ACTION_RADIO_TECHNOLOGY_CHANGED);
+        filter.addAction(ImsManager.ACTION_IMS_STATE_CHANGED);
         context.registerReceiver(mIntentReceiver, filter);
+
+        // MTK
+        /// M: Simulate IMS Registration @{
+        final IntentFilter imsfilter = new IntentFilter();
+        imsfilter.addAction("ACTION_IMS_SIMULATE");
+        context.registerReceiver(mBroadcastReceiver, imsfilter);
+        /// @}
+
+        //MTK-START [ALPS00368272]
+        mCr.registerContentObserver(
+                Settings.System.getUriFor(Settings.Global.MULTI_SIM_DATA_CALL_SUBSCRIPTION), true,
+                mDataConnectionSettingObserver);
+        mCr.registerContentObserver(
+                Settings.System.getUriFor(Settings.Global.MOBILE_DATA), true,
+                mDataConnectionSettingObserver);
     }
 
     @Override
@@ -266,6 +650,15 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         mCi.unSetOnNITZTime(this);
         mCr.unregisterContentObserver(mAutoTimeObserver);
         mCr.unregisterContentObserver(mAutoTimeZoneObserver);
+
+        // MTK
+        mCr.unregisterContentObserver(mMsicFeatureConfigObserver);
+        mCr.unregisterContentObserver(mDataConnectionSettingObserver);
+        if (SystemProperties.get("ro.mtk_femto_cell_support").equals("1")) {
+            mCi.unregisterForFemtoCellInfo(this);
+        }
+        mCi.unregisterForIccRefresh(this);
+
         mPhone.getContext().unregisterReceiver(mIntentReceiver);
         super.dispose();
     }
@@ -317,9 +710,23 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 break;
 
             case EVENT_RADIO_STATE_CHANGED:
-                // This will do nothing in the radio not
-                // available case
-                setPowerStateToDesired();
+                // MTK
+                if (RadioManager.isMSimModeSupport()) {
+                    log("MTK propiertary Power on flow, setRadioPower:  mDesiredPowerState=" + mDesiredPowerState + "  phoneId=" + mPhone.getPhoneId());
+                    RadioManager.getInstance().setRadioPower(mDesiredPowerState, mPhone.getPhoneId());
+                }
+                else {
+                    // This will do nothing in the radio not
+                    // available case
+                    setPowerStateToDesired();
+                }
+                if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                    log("mOnSubscriptionsChangedListener.onSubscriptionsChanged");
+                    mOnSubscriptionsChangedListener.onSubscriptionsChanged();
+                }
+                if (mCi.getRadioState() == CommandsInterface.RadioState.RADIO_ON) {
+                    setDeviceRatMode(mPhone.getPhoneId());
+                }
                 pollState();
                 break;
 
@@ -336,6 +743,11 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                     return;
                 }
                 ar = (AsyncResult) msg.obj;
+                // MTK
+                if ((ar.exception == null) && (ar.result != null)) {
+                    mSignalStrengthChangedRegistrants.notifyResult(
+                            new SignalStrength((SignalStrength)ar.result));
+                }
                 onSignalStrengthResult(ar, true);
                 queueNextSignalStrengthPoll();
 
@@ -499,6 +911,14 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 setPowerStateToDesired();
                 break;
 
+            // MTK
+            case EVENT_PS_NETWORK_STATE_CHANGED:
+                log("handle EVENT_PS_NETWORK_STATE_CHANGED");
+                ar = (AsyncResult) msg.obj;
+                onPsNetworkStateChangeResult(ar);
+                pollState();
+                break;
+
             default:
                 super.handleMessage(msg);
             break;
@@ -527,6 +947,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         // If we want it on and it's off, turn it on
         if (mDesiredPowerState
                 && mCi.getRadioState() == CommandsInterface.RadioState.RADIO_OFF) {
+            // MTK
+            RadioManager.getInstance().sendRequestBeforeSetRadioPower(true, mPhone.getPhoneId());
             mCi.setRadioPower(true, null);
         } else if (!mDesiredPowerState && mCi.getRadioState().isOn()) {
             // If it's on and available and we want it off gracefully
@@ -565,6 +987,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             mPhone.mCT.mForegroundCall.hangupIfAlive();
         }
 
+        // MTK
+        RadioManager.getInstance().sendRequestBeforeSetRadioPower(false, mPhone.getPhoneId());
         mCi.setRadioPower(false, null);
     }
 
@@ -2159,6 +2583,16 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         synchronized (this) {
             if (!mPendingRadioPowerOffAfterDataOff) {
                 int dds = SubscriptionManager.getDefaultDataSubId();
+
+                // MTK
+                int phoneSubId = mPhone.getSubId();
+                if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                    phoneSubId = SvlteUtils.getSvlteSubIdBySubId(phoneSubId);
+                }
+                log("powerOffRadioSafely phoneId=" + SubscriptionManager.getPhoneId(dds)
+                        + ", dds=" + dds + ", mPhone.getSubId()=" + mPhone.getSubId()
+                        + ", phoneSubId=" + phoneSubId);
+
                 // To minimize race conditions we call cleanUpAllConnections on
                 // both if else paths instead of before this isDisconnected test.
                 if (dcTracker.isDisconnected()
@@ -2177,7 +2611,24 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                         mPhone.mCT.mBackgroundCall.hangupIfAlive();
                         mPhone.mCT.mForegroundCall.hangupIfAlive();
                     }
-                    dcTracker.cleanUpAllConnections(Phone.REASON_RADIO_TURNED_OFF);
+
+                    // MTK
+                    if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        dcTracker.cleanUpAllConnections(Phone.REASON_RADIO_TURNED_OFF);
+                    } else {
+                        if (SvlteUtils.getSvltePhoneProxy(mPhone.getPhoneId())
+                                .getPsPhone().getPhoneType() != mPhone.getPhoneType()) {
+                            if (DBG) log("mPhone is not current Ps Phone, radio off right now");
+                            hangupAndPowerOff();
+                            mPendingRadioPowerOffAfterDataOff = false;
+                            return;
+                        } else {
+                            dcTracker.cleanUpAllConnections(Phone.REASON_RADIO_TURNED_OFF);
+                        }
+                    }
+
+                    // MTK TODO: the corresponding logic is very different, not porting for now
+                    // (priority on fixing build)
                     if (dds != mPhone.getSubId()
                             && !ProxyController.getInstance().isDataDisconnected(dds)) {
                         if (DBG) log("Data is active on DDS.  Wait for all data disconnect");
@@ -2219,5 +2670,1157 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
             }
         }
         mImsRegistrationOnOff = registered;
+    }
+
+    // MTK
+
+    private static int getPhoneInstanceCount() {
+        /// M: [C2K][SVLTE] SVLTE has 2 phone instances. @{
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            return TelephonyManager.getDefault().getPhoneCount() + 2;
+        }
+        return TelephonyManager.getDefault().getPhoneCount();
+        /// @}
+    }
+
+    protected void setDeviceRatMode(int phoneId) {
+        log("[setDeviceRatMode]+");
+        int capabilityPhoneId = RadioCapabilitySwitchUtil.getMainCapabilityPhoneId();
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()
+                && phoneId == capabilityPhoneId) {
+            if (containsCdmaApp(getCardType(SvlteUtils.getSlotId(phoneId)))) {
+                log("[setDeviceRatMode]- Not USIM/SIM, do not set ERAT");
+                return;
+            }
+            LteDcPhoneProxy lteDcPhoneProxy = (LteDcPhoneProxy) PhoneFactory.getPhone(phoneId);
+            if (lteDcPhoneProxy.getSvlteRatController().getSvlteRatMode() ==
+                    SvlteRatController.SvlteRatMode.SVLTE_RAT_MODE_4G_DATA_ONLY) {
+                log("[setDeviceRatMode]- SVLTE LTE data only mode, do not set ERAT");
+                return;
+            }
+            if (SvlteRatController.getEngineerMode() == SvlteRatController.ENGINEER_MODE_LTE) {
+                log("FTA LTE only, do not set ERAT");
+                return;
+            }
+        }
+        int targetNetworkMode = RILConstants.NETWORK_MODE_GSM_ONLY;
+        int restrictedNwMode = -1 ;
+
+        /*
+        if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+            try {
+                if (mServiceStateExt.isSupportRatBalancing()) {
+                    log("Network Type is controlled by RAT Blancing, no need to set network type");
+                    log("[setDeviceRatMode]-");
+                    return;
+                }
+            } catch (RuntimeException e) {
+                e.printStackTrace();
+            }
+        }
+        */
+        if (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1) {
+            targetNetworkMode = RILConstants.NETWORK_MODE_LTE_GSM_WCDMA;
+        } else if (phoneId == capabilityPhoneId) {
+            targetNetworkMode = getPreferredNetworkModeSettings(phoneId);
+            /*
+            if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
+                try {
+                    restrictedNwMode = mServiceStateExt.needAutoSwitchRatMode(phoneId, mLocatedPlmn);
+                } catch (RuntimeException e) {
+                    e.printStackTrace();
+                }
+            }
+            */
+            log("restrictedNwMode = " + restrictedNwMode);
+            if (restrictedNwMode >= Phone.NT_MODE_WCDMA_PREF) {
+                if (restrictedNwMode != targetNetworkMode) {
+                    log("Revise targetNetworkMode to " + restrictedNwMode);
+                    targetNetworkMode = restrictedNwMode;
+                }
+            }
+        } else {
+            log("Not major phone");
+        }
+
+        log("targetNetworkMode = " + targetNetworkMode
+                        + " capcapabilityPhoneId = " + capabilityPhoneId);
+
+        if (targetNetworkMode >= Phone.NT_MODE_WCDMA_PREF) {
+            mCi.setPreferredNetworkType(targetNetworkMode, null);
+            log("[setDeviceRatMode]- " + targetNetworkMode);
+        } else {
+            log("[setDeviceRatMode]- targetNetworkMode invalid!!");
+        }
+    }
+
+    private String getSIMOperatorNumeric() {
+        IccRecords r = mIccRecords;
+        String mccmnc;
+        String imsi;
+
+        if (r != null) {
+            mccmnc = r.getOperatorNumeric();
+
+            //M: [ALPS01591758] Try to get HPLMN from IMSI (getOperatorNumeric might response null due to mnc length is not available yet)
+            if (mccmnc == null) {
+                imsi = r.getIMSI();
+                if (imsi != null && !imsi.equals("")) {
+                    mccmnc = imsi.substring(0, 5);
+                    log("get MCC/MNC from IMSI = " + mccmnc);
+                }
+            }
+            return mccmnc;
+        } else {
+            return null;
+        }
+    }
+
+    public void onSetPhoneRCDone(ArrayList<RadioAccessFamily> phoneRcs) {
+        int INVALID = -1;
+        int size = 0;
+        boolean needToChangeNetworkMode = false;
+        RadioAccessFamily phoneRaf = null;
+        int myPhoneId = mPhone.getPhoneId();
+        int newCapability = 0;
+        int networkMode = INVALID;
+
+        if (phoneRcs == null) return;
+        size = phoneRcs.size();
+        for (int i = 0; i < size; i++) {
+            phoneRaf = phoneRcs.get(i);
+            if (myPhoneId == phoneRaf.getPhoneId()) {
+                needToChangeNetworkMode = true;
+                newCapability = phoneRaf.getRadioAccessFamily();
+                break;
+            }
+        }
+
+        if (needToChangeNetworkMode) {
+            if ((newCapability & RadioAccessFamily.RAF_LTE)
+                    == RadioAccessFamily.RAF_LTE) {
+                networkMode = RILConstants.NETWORK_MODE_LTE_GSM_WCDMA;
+            } else if ((newCapability & RadioAccessFamily.RAF_UMTS)
+                    == RadioAccessFamily.RAF_UMTS) {
+                networkMode = RILConstants.NETWORK_MODE_WCDMA_PREF;
+            } else if ((newCapability & RadioAccessFamily.RAF_GSM)
+                    == RadioAccessFamily.RAF_GSM) {
+                networkMode = RILConstants.NETWORK_MODE_GSM_ONLY;
+            } else {
+                networkMode = INVALID;
+                log("Error: capability is not define");
+            }
+
+            if (DBG) log("myPhoneId=" + myPhoneId + " newCapability=" + newCapability
+                    + " networkMode=" + networkMode);
+
+            if (networkMode != INVALID) {
+                //FIXME : update preferred network mode
+                //TelephonyManager.putIntAtIndex(mPhone.getContext().getContentResolver(),
+                //        Settings.Global.PREFERRED_NETWORK_MODE, myPhoneId, networkMode);
+                //networkMode = PhoneFactory.calculatePreferredNetworkType(mPhone.getContext());
+                //FIXME : update preferred network mode
+                setDeviceRatMode(mPhone.getPhoneId());
+            }
+        }
+    }
+
+    private void onNetworkStateChangeResult(AsyncResult ar) {
+        String info[];
+        int state = -1;
+        int lac = -1;
+        int cid = -1;
+        int Act = -1;
+        int cause = -1;
+
+        /* Note: There might not be full +CREG URC info when screen off
+                   Full URC format: +CREG:  <stat>, <lac>, <cid>, <Act>,<cause> */
+        if (ar.exception != null || ar.result == null) {
+           loge("onNetworkStateChangeResult exception");
+        } else {
+            info = (String[]) ar.result;
+
+            if (info.length > 0) {
+
+                state = Integer.parseInt(info[0]);
+
+                if (info[1] != null && info[1].length() > 0) {
+                   lac = Integer.parseInt(info[1], 16);
+                }
+
+                if (info[2] != null && info[2].length() > 0) {
+                   //TODO: fix JE (java.lang.NumberFormatException: Invalid int: "ffffffff")
+                   if (info[2].equals("FFFFFFFF") || info[2].equals("ffffffff")) {
+                       log("Invalid cid:" + info[2]);
+                       info[2] = "0000ffff";
+                   }
+                   cid = Integer.parseInt(info[2], 16);
+                }
+
+                if (info[3] != null && info[3].length() > 0) {
+                   Act = Integer.parseInt(info[3]);
+                }
+
+                if (info[4] != null && info[4].length() > 0) {
+                   cause = Integer.parseInt(info[4]);
+                }
+
+                log("onNetworkStateChangeResult state:" + state + " lac:" + lac + " cid:" + cid + " Act:" + Act + " cause:" + cause);
+
+                /* AT+CREG? result won't include <lac>,<cid> when phone is NOT registered.
+                                So we wpdate mNewCellLoc via +CREG URC when phone is not registered to network ,so that CellLoc can be updated when pollStateDone  */
+                if ((lac != -1) && (cid != -1) && (regCodeToServiceState(state) == ServiceState.STATE_OUT_OF_SERVICE)) {
+                    // ignore unknown lac or cid value
+                    if (lac == 0xfffe || cid == 0x0fffffff)
+                    {
+                        log("unknown lac:" + lac + " or cid:" + cid);
+                    }
+                    else
+                    {
+                        log("mNewCellLoc Updated, lac:" + lac + " and cid:" + cid);
+                        mNewCellLoc.setLacAndCid(lac, cid);
+                    }
+                }
+            } else {
+                loge("onNetworkStateChangeResult length zero");
+            }
+        }
+
+        return;
+    }
+
+    public void setEverIVSR(boolean value)
+    {
+        log("setEverIVSR:" + value);
+        mEverIVSR = value;
+
+        /* ALPS00376525 notify IVSR start event */
+        if (value == true) {
+            Intent intent = new Intent(TelephonyIntents.ACTION_IVSR_NOTIFY);
+            intent.putExtra(TelephonyIntents.INTENT_KEY_IVSR_ACTION, "start");
+            SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+
+            if (TelephonyManager.getDefault().getPhoneCount() == 1) {
+                intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING);
+            }
+
+            log("broadcast ACTION_IVSR_NOTIFY intent");
+
+            mPhone.getContext().sendBroadcastAsUser(intent, UserHandle.ALL);
+        }
+    }
+
+    /**
+     * Return the current located PLMN string (ex: "46000") or null (ex: flight mode or no signal area)
+     */
+    public String getLocatedPlmn() {
+        return mLocatedPlmn;
+    }
+
+    private void updateLocatedPlmn(String plmn) {
+        log("updateLocatedPlmn(),previous plmn= " + mLocatedPlmn + " ,update to: " + plmn);
+
+        if (((mLocatedPlmn == null) && (plmn != null)) ||
+            ((mLocatedPlmn != null) && (plmn == null)) ||
+            ((mLocatedPlmn != null) && (plmn != null) && !(mLocatedPlmn.equals(plmn)))) {
+            Intent intent = new Intent(TelephonyIntents.ACTION_LOCATED_PLMN_CHANGED);
+            if (TelephonyManager.getDefault().getPhoneCount() == 1) {
+                intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING);
+            }
+            intent.putExtra(TelephonyIntents.EXTRA_PLMN, plmn);
+
+            if(plmn != null){
+                int mcc;
+                try {
+                    mcc = Integer.parseInt(plmn.substring(0, 3));
+                    intent.putExtra(TelephonyIntents.EXTRA_ISO, MccTable.countryCodeForMcc(mcc));
+                } catch ( NumberFormatException ex) {
+                    loge("updateLocatedPlmn: countryCodeForMcc error" + ex);
+                    intent.putExtra(TelephonyIntents.EXTRA_ISO, "");
+                } catch ( StringIndexOutOfBoundsException ex) {
+                    loge("updateLocatedPlmn: countryCodeForMcc error" + ex);
+                    intent.putExtra(TelephonyIntents.EXTRA_ISO, "");
+                }
+                mLocatedPlmn = plmn;  //[ALPS02198932]
+                setDeviceRatMode(mPhone.getPhoneId());
+            } else {
+                intent.putExtra(TelephonyIntents.EXTRA_ISO, "");
+            }
+
+            SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+            mPhone.getContext().sendStickyBroadcastAsUser(intent, UserHandle.ALL);
+        }
+
+        mLocatedPlmn = plmn;
+    }
+
+    private void onFemtoCellInfoResult(AsyncResult ar) {
+        String info[];
+        int isCsgCell = 0;
+
+        if (ar.exception != null || ar.result == null) {
+           loge("onFemtoCellInfo exception");
+        } else {
+            info = (String[]) ar.result;
+
+            if (info.length > 0) {
+
+                if (info[0] != null && info[0].length() > 0) {
+                    mFemtocellDomain = Integer.parseInt(info[0]);
+                    log("onFemtoCellInfo: mFemtocellDomain set to " + mFemtocellDomain);
+                }
+
+                if (info[5] != null && info[5].length() > 0) {
+                   isCsgCell = Integer.parseInt(info[5]);
+                }
+
+                log("onFemtoCellInfo: domain= " + mFemtocellDomain + ",isCsgCell= " + isCsgCell);
+
+                if (isCsgCell == 1) {
+                    if (info[6] != null && info[6].length() > 0) {
+                        mCsgId = info[6];
+                        log("onFemtoCellInfo: mCsgId set to " + mCsgId);
+                    }
+
+                    if (info[8] != null && info[8].length() > 0) {
+                        mHhbName = new String(IccUtils.hexStringToBytes(info[8]));
+                        log("onFemtoCellInfo: mHhbName set from " + info[8] + " to " + mHhbName);
+                    } else {
+                        mHhbName = null;
+                        log("onFemtoCellInfo: mHhbName is not available ,set to null");
+                    }
+                } else {
+                    mCsgId = null;
+                    mHhbName = null;
+                    log("onFemtoCellInfo: csgId and hnbName are cleared");
+                }
+
+                Intent intent = new Intent(TelephonyIntents.SPN_STRINGS_UPDATED_ACTION);
+                SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+
+                if (TelephonyManager.getDefault().getPhoneCount() == 1) {
+                    intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING);
+                }
+
+                intent.putExtra(TelephonyIntents.EXTRA_SHOW_SPN, mCurShowSpn);
+                intent.putExtra(TelephonyIntents.EXTRA_SPN, mCurSpn);
+                intent.putExtra(TelephonyIntents.EXTRA_SHOW_PLMN, mCurShowPlmn);
+                intent.putExtra(TelephonyIntents.EXTRA_PLMN, mCurPlmn);
+                // Femtocell (CSG) info
+                intent.putExtra(TelephonyIntents.EXTRA_HNB_NAME, mHhbName);
+                intent.putExtra(TelephonyIntents.EXTRA_CSG_ID, mCsgId);
+                intent.putExtra(TelephonyIntents.EXTRA_DOMAIN, mFemtocellDomain);
+
+                mPhone.getContext().sendStickyBroadcast(intent);
+            }
+        }
+    }
+
+
+
+    /* ALPS01139189 START */
+    private void broadcastHideNetworkState(String action, int state) {
+        if (DBG) log("broadcastHideNetworkUpdate action=" + action + " state=" + state);
+        Intent intent = new Intent(TelephonyIntents.ACTION_HIDE_NETWORK_STATE);
+        if (TelephonyManager.getDefault().getPhoneCount() == 1) {
+            intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING);
+        }
+        intent.putExtra(TelephonyIntents.EXTRA_ACTION, action);
+        intent.putExtra(TelephonyIntents.EXTRA_REAL_SERVICE_STATE, state);
+        SubscriptionManager.putPhoneIdAndSubIdExtra(intent, mPhone.getPhoneId());
+        mPhone.getContext().sendStickyBroadcastAsUser(intent, UserHandle.ALL);
+    }
+    /* ALPS01139189 END */
+
+    //ALPS00248788
+    private void onInvalidSimInfoReceived(AsyncResult ar) {
+        String[] InvalidSimInfo = (String[]) ar.result;
+        String plmn = InvalidSimInfo[0];
+        int cs_invalid = Integer.parseInt(InvalidSimInfo[1]);
+        int ps_invalid = Integer.parseInt(InvalidSimInfo[2]);
+        int cause = Integer.parseInt(InvalidSimInfo[3]);
+        int testMode = -1;
+
+        // do NOT apply IVSR when in TEST mode
+        testMode = SystemProperties.getInt("gsm.gcf.testmode", 0);
+        // there is only one test mode in modem. actually it's not SIM dependent , so remove testmode2 property here
+
+        log("onInvalidSimInfoReceived testMode:" + testMode + " cause:" + cause + " cs_invalid:" + cs_invalid + " ps_invalid:" + ps_invalid + " plmn:" + plmn + " mEverIVSR:" + mEverIVSR);
+
+        //Check UE is set to test mode or not   (CTA =1,FTA =2 , IOT=3 ...)
+        if (testMode != 0) {
+            log("InvalidSimInfo received during test mode: " + testMode);
+            return;
+        }
+
+         //MTK-ADD Start : for CS not registered , PS regsitered (ex: LTE PS only mode or 2/3G PS only SIM card or CS domain network registeration temporary failure
+         if (cs_invalid == 1) {
+             isCsInvalidCard = true;
+         }
+         //MTK-ADD END : for CS not registered , PS regsitered (ex: LTE PS only mode or 2/3G PS only SIM card or CS domain network registeration temporary failure
+
+        /* check if CS domain ever sucessfully registered to the invalid SIM PLMN */
+        /* Integrate ALPS00286197 with MR2 data only device state update , not to apply CS domain IVSR for data only device */
+        if (mVoiceCapable) {
+            if ((cs_invalid == 1) && (mLastRegisteredPLMN != null) && (plmn.equals(mLastRegisteredPLMN)))
+            {
+                log("InvalidSimInfo set TRM due to CS invalid");
+                setEverIVSR(true);
+                mLastRegisteredPLMN = null;
+                mLastPSRegisteredPLMN = null;
+                mPhone.setTrm(3, null);
+                return;
+            }
+        }
+
+        /* check if PS domain ever sucessfully registered to the invalid SIM PLMN */
+        if ((ps_invalid == 1) && (mLastPSRegisteredPLMN != null) && (plmn.equals(mLastPSRegisteredPLMN)))
+        {
+            log("InvalidSimInfo set TRM due to PS invalid ");
+            setEverIVSR(true);
+            mLastRegisteredPLMN = null;
+            mLastPSRegisteredPLMN = null;
+            mPhone.setTrm(3, null);
+            return;
+        }
+
+        /* ALPS00324111: to force trigger IVSR */
+        /* ALPS00407923  : The following code is to "Force trigger IVSR even when MS never register to the network before"
+                  The code was intended to cover the scenario of "invalid SIM NW issue happen at the first network registeration during boot-up".
+                  However, it might cause false alarm IVSR ex: certain sim card only register CS domain network , but PS domain is invalid.
+                  For such sim card, MS will receive invalid SIM at the first PS domain network registeration
+                  In such case , to trigger IVSR will be a false alarm,which will cause CS domain network registeration time longer (due to IVSR impact)
+                  It's a tradeoff. Please think about the false alarm impact before using the code below.*/
+    /*
+        if ((mEverIVSR == false) && (gprsState != ServiceState.STATE_IN_SERVICE) &&(mSS.getVoiceRegState() != ServiceState.STATE_IN_SERVICE))
+        {
+            log("InvalidSimInfo set TRM due to never set IVSR");
+            setEverIVSR(true);
+            mLastRegisteredPLMN = null;
+            mLastPSRegisteredPLMN = null;
+            phone.setTRM(3, null);
+            return;
+        }
+        */
+
+    }
+
+    /**
+     * Post a notification to NotificationManager for network reject cause
+     *
+     * @param cause
+     */
+    private void setRejectCauseNotification(int cause) {
+        if (DBG) log("setRejectCauseNotification: create notification " + cause);
+
+        Rlog.w(LOG_TAG, "setRejectCauseNotification: stub!");
+        /*
+        Context context = mPhone.getContext();
+        mNotification = new Notification();
+        mNotification.when = System.currentTimeMillis();
+        mNotification.flags = Notification.FLAG_AUTO_CANCEL;
+        mNotification.icon = com.android.internal.R.drawable.stat_sys_warning;
+        Intent intent = new Intent();
+        mNotification.contentIntent = PendingIntent.
+            getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+
+        CharSequence details = "";
+        CharSequence title = context.getText(com.mediatek.R.string.RejectCauseTitle);
+        int notificationId = REJECT_NOTIFICATION;
+
+        switch (cause) {
+            case 2:
+                details = context.getText(com.mediatek.R.string.MMRejectCause2);;
+                break;
+            case 3:
+                details = context.getText(com.mediatek.R.string.MMRejectCause3);;
+                break;
+            case 5:
+                details = context.getText(com.mediatek.R.string.MMRejectCause5);;
+                break;
+            case 6:
+                details = context.getText(com.mediatek.R.string.MMRejectCause6);;
+                break;
+            case 13:
+                details = context.getText(com.mediatek.R.string.MMRejectCause13);
+                break;
+            default:
+                break;
+        }
+
+        if (DBG) log("setRejectCauseNotification: put notification " + title + " / " + details);
+        mNotification.tickerText = title;
+        mNotification.setLatestEventInfo(context, title, details,
+                mNotification.contentIntent);
+
+        NotificationManager notificationManager = (NotificationManager)
+            context.getSystemService(Context.NOTIFICATION_SERVICE);
+
+        notificationManager.notify(notificationId, mNotification);
+        */
+    }
+
+    /**
+     * Post a notification to NotificationManager for spcial icc card type
+     *
+     * @param cause
+     */
+    //[ALPS01558804] MTK-START: send notification for using some spcial icc card
+    private void setSpecialCardTypeNotification(String iccCardType, int titleType, int detailType) {
+        if (DBG) log("setSpecialCardTypeNotification: create notification for " + iccCardType);
+        Rlog.w(LOG_TAG, "setSpecialCardTypeNotification: stub!");
+        /*
+        //status notification
+        Context context = mPhone.getContext();
+        int notificationId = SPECIAL_CARD_TYPE_NOTIFICATION;
+
+        mNotification = new Notification();
+        mNotification.when = System.currentTimeMillis();
+        mNotification.flags = Notification.FLAG_AUTO_CANCEL;
+        mNotification.icon = com.android.internal.R.drawable.stat_sys_warning;
+
+        Intent intent = new Intent();
+        mNotification.contentIntent = PendingIntent
+            .getActivity(context, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+
+        CharSequence title = "";
+        switch (titleType) {
+            case 0:
+                title = context.getText(com.mediatek.R.string.Special_Card_Type_Title_Lte_Not_Available);
+                break;
+            default:
+                break;
+        }
+
+        CharSequence details = "";
+        switch (detailType) {
+            case 0:
+                details = context.getText(com.mediatek.R.string.Suggest_To_Change_USIM);
+                break;
+            default:
+                break;
+        }
+
+        if (DBG) log("setSpecialCardTypeNotification: put notification " + title + " / " + details);
+        mNotification.tickerText = title;
+        mNotification.setLatestEventInfo(context, title, details,
+                mNotification.contentIntent);
+
+        NotificationManager notificationManager = (NotificationManager)
+            context.getSystemService(Context.NOTIFICATION_SERVICE);
+
+        notificationManager.notify(notificationId, mNotification);
+        */
+    }
+    //[ALPS01558804] MTK-END: send notification for using some spcial icc card
+
+
+    //MTK-START [ALPS00540036]
+    private int getDstForMcc(int mcc, long when) {
+        int dst = 0;
+
+        if (mcc != 0) {
+            String tzId = MccTable.defaultTimeZoneForMcc(mcc);
+            if (tzId != null) {
+                TimeZone timeZone = TimeZone.getTimeZone(tzId);
+                Date date = new Date(when);
+                boolean isInDaylightTime = timeZone.inDaylightTime(date);
+                if (isInDaylightTime) {
+                    dst = 1;
+                    log("[NITZ] getDstForMcc: dst=" + dst);
+                }
+            }
+        }
+
+        return dst;
+    }
+
+    private int getMobileCountryCode() {
+        int mcc = 0;
+
+        String operatorNumeric = mSS.getOperatorNumeric();
+        if (operatorNumeric != null) {
+            try {
+                mcc = Integer.parseInt(operatorNumeric.substring(0, 3));
+            } catch (NumberFormatException ex) {
+                loge("countryCodeForMcc error" + ex);
+            } catch (StringIndexOutOfBoundsException ex) {
+                loge("countryCodeForMcc error" + ex);
+            }
+        }
+
+        return mcc;
+    }
+    //MTK-END [ALPS00540036]
+
+    //MTK-START: update TimeZone by MCC/MNC
+    //Find TimeZone in manufacturer maintained table for the country has multiple timezone
+    private TimeZone getTimeZonesWithCapitalCity(String iso) {
+        TimeZone tz = null;
+
+        //[ALPS01666276]-Start: don't udpate with capital city when we has received nitz before
+        if ((mZoneOffset == 0) && (mZoneDst == false)) {
+            for (int i = 0; i < mTimeZoneIdOfCapitalCity.length; i++) {
+                if (iso.equals(mTimeZoneIdOfCapitalCity[i][0])) {
+                    tz = TimeZone.getTimeZone(mTimeZoneIdOfCapitalCity[i][1]);
+                    log("uses TimeZone of Capital City:" + mTimeZoneIdOfCapitalCity[i][1]);
+                    break;
+                }
+            }
+        } else {
+            log("don't udpate with capital city, cause we have received nitz");
+        }
+        //[ALPS01666276]-End
+        return tz;
+    }
+
+    // For the case that MccTable.defaultTimeZoneForMcc() returns unexpected timezone
+    private String getTimeZonesByMcc(String mcc) {
+        String tz = null;
+
+        for (int i = 0; i < mTimeZoneIdByMcc.length; i++) {
+            if (mcc.equals(mTimeZoneIdByMcc[i][0])) {
+                tz = mTimeZoneIdByMcc[i][1];
+                log("uses Timezone of GsmSST by mcc: " + mTimeZoneIdByMcc[i][1]);
+                break;
+            }
+        }
+        return tz;
+    }
+
+    //MTK-Add-start : [ALPS01267367] fix timezone by MCC
+    protected void fixTimeZone() {
+        TimeZone zone = null;
+        String iso = "";
+        String operatorNumeric = mSS.getOperatorNumeric();
+        String mcc = null;
+
+        //[ALPS01416062] MTK ADD-START
+        if (operatorNumeric != null && (!(operatorNumeric.equals(""))) && isNumeric(operatorNumeric)) {
+        //if (operatorNumeric != null) {
+        //[ALPS01416062] MTK ADD-END
+            mcc = operatorNumeric.substring(0, 3);
+        } else {
+            log("fixTimeZone but not registered and operatorNumeric is null or invalid value");
+            return;
+        }
+
+        try {
+            iso = MccTable.countryCodeForMcc(Integer.parseInt(mcc));
+        } catch (NumberFormatException ex) {
+            loge("fixTimeZone countryCodeForMcc error" + ex);
+        }
+
+        if (!mcc.equals("000") && !TextUtils.isEmpty(iso) && getAutoTimeZone()) {
+
+            // Test both paths if ignore nitz is true
+            boolean testOneUniqueOffsetPath = SystemProperties.getBoolean(
+                        TelephonyProperties.PROPERTY_IGNORE_NITZ, false) &&
+                            ((SystemClock.uptimeMillis() & 1) == 0);
+
+            ArrayList<TimeZone> uniqueZones = TimeUtils.getTimeZonesWithUniqueOffsets(iso);
+            if ((uniqueZones.size() == 1) || testOneUniqueOffsetPath) {
+                zone = uniqueZones.get(0);
+                if (DBG) {
+                   log("fixTimeZone: no nitz but one TZ for iso-cc=" + iso +
+                           " with zone.getID=" + zone.getID() +
+                           " testOneUniqueOffsetPath=" + testOneUniqueOffsetPath);
+                }
+                setAndBroadcastNetworkSetTimeZone(zone.getID());
+            //MTK-START: [ALPS01262709] update time with MCC/MNC
+            //} else {
+            } else if (uniqueZones.size() > 1) {
+                log("uniqueZones.size=" + uniqueZones.size());
+                zone = getTimeZonesWithCapitalCity(iso);
+                //[ALPS01666276]-Start: don't udpate with capital city when we has received nitz before
+                if (zone != null) {
+                    setAndBroadcastNetworkSetTimeZone(zone.getID());
+                }
+                //[ALPS01666276]-End
+            //MTK-END: [ALPS01262709] update time with MCC/MNC
+            } else {
+                if (DBG) {
+                    log("fixTimeZone: there are " + uniqueZones.size() +
+                        " unique offsets for iso-cc='" + iso +
+                        " testOneUniqueOffsetPath=" + testOneUniqueOffsetPath +
+                        "', do nothing");
+                }
+            }
+        }
+
+        if (zone != null) {
+            log("fixTimeZone: zone != null zone.getID=" + zone.getID());
+            if (getAutoTimeZone()) {
+                setAndBroadcastNetworkSetTimeZone(zone.getID());
+            }
+            saveNitzTimeZone(zone.getID());
+        } else {
+            log("fixTimeZone: zone == null");
+        }
+    }
+    //[ALPS01416062] MTK ADD-START
+    public boolean isNumeric(String str) {
+        //[ALPS01565135] MTK ADD -START for avoide JE on Pattern.Matcher
+        //Pattern pattern = Pattern.compile("[0-9]*");
+        //Matcher isNum = pattern.matcher(str);
+        //if(!isNum.matches()) {
+        //    return false;
+        //}
+        //return true;
+
+        try {
+            int testNum = Integer.parseInt(str);
+        } catch (NumberFormatException eNFE) {
+            log("isNumeric:" + eNFE.toString());
+            return false;
+        } catch (Exception e) {
+            log("isNumeric:" + e.toString());
+            return false;
+        }
+        return true;
+        //[ALPS01565135] MTK ADD -END
+    }
+    //[ALPS01416062] MTK ADD-END
+
+    //MTK-END:  [ALPS01262709]  update TimeZone by MCC/MNC
+
+    @Override
+    protected void updateCellInfoRate() {
+        Rlog.w(LOG_TAG, "updateCellInfoRate(): stub!");
+        /*
+        log("updateCellInfoRate(),mCellInfoRate= " + mCellInfoRate);
+        if ((mCellInfoRate != Integer.MAX_VALUE) && (mCellInfoRate != 0)) {
+            if (mCellInfoTimer != null) {
+                log("cancel previous timer if any");
+                mCellInfoTimer.cancel();
+                mCellInfoTimer = null;
+            }
+
+            mCellInfoTimer = new Timer(true);
+
+            log("schedule timer with period = " + mCellInfoRate + " ms");
+            mCellInfoTimer.schedule(new timerTask(), mCellInfoRate);
+        } else if ((mCellInfoRate == 0) || (mCellInfoRate == Integer.MAX_VALUE)) {
+            if (mCellInfoTimer != null) {
+                log("cancel cell info timer if any");
+                mCellInfoTimer.cancel();
+                mCellInfoTimer = null;
+            }
+        }
+        */
+    }
+
+    /*
+    public class timerTask extends TimerTask {
+        public void run() {
+            log("CellInfo Timeout invoke getAllCellInfoByRate()");
+            if ((mCellInfoRate != Integer.MAX_VALUE) && (mCellInfoRate != 0) && (mCellInfoTimer != null)) {
+                log("timerTask schedule timer with period = " + mCellInfoRate + " ms");
+                mCellInfoTimer.schedule(new timerTask(), mCellInfoRate);
+            }
+
+            new Thread(new Runnable() {
+                public void run() {
+                    log("timerTask invoke getAllCellInfoByRate() in another thread");
+                    getAllCellInfoByRate();
+                }
+            }).start();
+
+        }
+    };
+    */
+
+    //MTK-START [ALPS01830723]
+
+    private void onPsNetworkStateChangeResult(AsyncResult ar) {
+        int info[];
+        int newUrcState;
+
+        if (ar.exception != null || ar.result == null) {
+           loge("onPsNetworkStateChangeResult exception");
+        } else {
+            info = (int[]) ar.result;
+            newUrcState = regCodeToServiceState(info[0]);
+            log("mPsRegState:" + mPsRegState + ",new:" + newUrcState);
+
+            if (mPsRegState == ServiceState.STATE_IN_SERVICE
+                       && newUrcState != ServiceState.STATE_IN_SERVICE) {
+                log("set flag for ever detach, may notify attach later");
+                bHasDetachedDuringPolling = true;
+            }
+
+            mPsRegState = newUrcState;
+            log("result: raw reg state:" + info[0] + " ,mPsRegState:" + mPsRegState);
+        }
+    }
+
+    private void handlePsRegNotification(int oldState, int newState) {
+
+        boolean hasGprsAttached = false;
+        boolean hasGprsDetached = false;
+        boolean specificNotify = false;
+
+        log("old:" + oldState + " ,mPsRegState:" + mPsRegState + ",new:" + newState);
+
+        // Compare oldState and mPsRegState
+        hasGprsAttached =
+                oldState != ServiceState.STATE_IN_SERVICE
+                && mPsRegState == ServiceState.STATE_IN_SERVICE;
+
+        hasGprsDetached =
+                oldState == ServiceState.STATE_IN_SERVICE
+                && mPsRegState != ServiceState.STATE_IN_SERVICE;
+
+        if (hasGprsAttached) {
+            mAttachedRegistrants.notifyRegistrants();
+            mLastPSRegisteredPLMN = mSS.getOperatorNumeric() ;
+            log("mLastPSRegisteredPLMN= " + mLastPSRegisteredPLMN);
+            bHasDetachedDuringPolling = false;
+        }
+
+        if (hasGprsDetached) {
+            mDetachedRegistrants.notifyRegistrants();
+        }
+
+        // Compare mPsRegState and newState
+        hasGprsAttached =
+                mPsRegState != ServiceState.STATE_IN_SERVICE
+                && newState == ServiceState.STATE_IN_SERVICE;
+
+        hasGprsDetached =
+                mPsRegState == ServiceState.STATE_IN_SERVICE
+                && newState != ServiceState.STATE_IN_SERVICE;
+
+
+        if (!hasGprsAttached &&
+            bHasDetachedDuringPolling && newState == ServiceState.STATE_IN_SERVICE) {
+            // M: It means:   attached -> (detached) -> attached, need to compensate for notifying
+            // this modification is for "network losing enhancement"
+            specificNotify = true;
+            log("need to compensate for notifying");
+        }
+
+        if (hasGprsAttached || specificNotify) {
+            mAttachedRegistrants.notifyRegistrants();
+            mLastPSRegisteredPLMN = mSS.getOperatorNumeric() ;
+            log("mLastPSRegisteredPLMN= " + mLastPSRegisteredPLMN);
+        }
+
+        if (hasGprsDetached) {
+            mDetachedRegistrants.notifyRegistrants();
+        }
+
+        mPsRegState = newState;
+        bHasDetachedDuringPolling = false; // reset flag
+    }
+    //MTK-END [ALPS01830723]
+
+    //MTK-START [ALPS00368272]
+    private void getEINFO(int eventId) {
+        mPhone.invokeOemRilRequestStrings(new String[]{"AT+EINFO?", "+EINFO"}, this.obtainMessage(eventId));
+        log("getEINFO for EMMRRS");
+    }
+
+    private void setEINFO(int value, Message onComplete) {
+        String Cmd[] = new String[2];
+        Cmd[0] = "AT+EINFO=" + value;
+        Cmd[1] = "+EINFO";
+        mPhone.invokeOemRilRequestStrings(Cmd, onComplete);
+        log("setEINFO for EMMRRS, ATCmd[0]=" + Cmd[0]);
+    }
+
+    private boolean isCurrentPhoneDataConnectionOn() {
+        int defaultDataSubId = SubscriptionManager.getDefaultDataSubId();
+        boolean userDataEnabled = TelephonyManager.getIntWithSubId(
+                mPhone.getContext().getContentResolver(),
+                Settings.Global.MOBILE_DATA, defaultDataSubId, 1) == 1;
+        log("userDataEnabled=" + userDataEnabled + ", defaultDataSubId=" + defaultDataSubId);
+        return (userDataEnabled && (defaultDataSubId == SubscriptionManager.getSubIdUsingPhoneId(mPhone.getPhoneId())));
+    }
+    //MTK-END[ALPS00368272]
+
+    //[ALPS01804936]-start:fix JE when change system language to "Burmese"
+    protected int updateOperatorAlpha(String operatorAlphaLong) {
+        int myPhoneId = mPhone.getPhoneId();
+        if (myPhoneId == PhoneConstants.SIM_ID_1) {
+            log("update PROPERTY_OPERATOR_ALPHA to " + operatorAlphaLong);
+            SystemProperties.set(TelephonyProperties.PROPERTY_OPERATOR_ALPHA, operatorAlphaLong);
+        } else if (myPhoneId == PhoneConstants.SIM_ID_2) {
+            log("update PROPERTY_OPERATOR_ALPHA_2 to " + operatorAlphaLong);
+            SystemProperties.set(TelephonyProperties.PROPERTY_OPERATOR_ALPHA_2, operatorAlphaLong);
+        } else if (myPhoneId == PhoneConstants.SIM_ID_3) {
+            log("update PROPERTY_OPERATOR_ALPHA_3 to " + operatorAlphaLong);
+            SystemProperties.set(TelephonyProperties.PROPERTY_OPERATOR_ALPHA_3, operatorAlphaLong);
+        } else if (myPhoneId == PhoneConstants.SIM_ID_4) {
+            log("update PROPERTY_OPERATOR_ALPHA_4 to " + operatorAlphaLong);
+            SystemProperties.set(TelephonyProperties.PROPERTY_OPERATOR_ALPHA_4, operatorAlphaLong);
+        }
+        return 1;
+    }
+    //[ALPS01804936]-end
+
+    //[ALPS01810775,ALPS01868743] -Start: update network type at screen off
+    private void updateNetworkInfo(int newRegState, int newNetworkType) {
+        int displayState = mCi.getDisplayState();
+
+        boolean isRegisted = (
+                (newRegState == ServiceState.REGISTRATION_STATE_HOME_NETWORK) ||
+                (newRegState == ServiceState.REGISTRATION_STATE_ROAMING));
+
+        //Case1: update network type with new type.
+        //
+        //       situation 1): The format of CREG is long format when screen is on.
+        //       situation 2): mIsForceSendScreenOnForUpdateNwInfo is ture
+        //                         means we forec changed format to long at last time.
+        //       situation 3): not camp on network when screen is off
+        //
+        //Case2: change format to update cid , lac and network type
+        //       when camp on network after screen off.
+        //
+        //Case3: update network type with old type.
+        //       screen is off and registered before screen off
+
+        if ((displayState == Display.STATE_ON) ||
+                mIsForceSendScreenOnForUpdateNwInfo ||
+                ((!isRegisted) && (displayState == Display.STATE_OFF))) {
+            mNewSS.setRilVoiceRadioTechnology(newNetworkType);
+        } else if ((mSS.getVoiceRegState()
+                        == ServiceState.STATE_OUT_OF_SERVICE) &&
+                        (isRegisted) && (displayState == Display.STATE_OFF)) {
+            if (!mIsForceSendScreenOnForUpdateNwInfo) {
+                log("send screen state ON to change format of CREG");
+                mIsForceSendScreenOnForUpdateNwInfo = true;
+                mCi.sendScreenState(true);
+                pollState();
+            }
+        } else if ((displayState == Display.STATE_OFF) && isRegisted) {
+            mNewSS.setRilVoiceRadioTechnology(mSS.getRilVoiceRadioTechnology());
+            log("set Voice network type=" + mNewSS.getRilVoiceRadioTechnology());
+        }
+    }
+    //[ALPS01810775,ALPS01868743] -End
+
+    /// M: [C2K][SVLTE]. @{
+    // Support for 4G UICC card.
+    private static boolean isUiccCard() {
+        String cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+        Rlog.d(LOG_TAG, "isUiccCard cardType=" + cardType);
+        String appType[] = cardType.split(",");
+        for (int i = 0; i < appType.length; i++) {
+            if ("USIM".equals(appType[i])) {
+                Rlog.d(LOG_TAG, "isUiccCard: contain USIM");
+                return true;
+            }
+        }
+        Rlog.d(LOG_TAG, "isUiccCard: not contain USIM");
+        return false;
+    }
+
+    // Support modem remote SIM access.
+    private void configModemRemoteSimAccess() {
+        if (isUiccCard()) {
+            mCi.configModemStatus(2, 1, null);
+        } else {
+            mCi.configModemStatus(1, 1, null);
+        }
+    }
+    /// @}
+
+    ///M: For svlte support. @{
+    public void setSvlteServiceStateTracker(SvlteServiceStateTracker lteSST) {
+        this.mSvlteSST = lteSST;
+        log("setSvlteServiceStateTracker mSvlteSST = " + mSvlteSST + ", this = " + this);
+    }
+    /// @}
+
+    ///M: For C2K OM solution2. @{
+
+    private boolean isInSvlteMode() {
+
+        if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            return false;
+        }
+
+        int phoneId = mPhone.getPhoneId();
+        if ((phoneId == SubscriptionManager.LTE_DC_PHONE_ID_1)
+                || (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_2)) {
+            return true;
+        }
+        return false;
+    }
+
+    private void notifyServiceStateChanged() {
+        if (isInSvlteMode()) {
+            log("notifyServiceStateChanged mLteSST = " + mSvlteSST + "this = " + this);
+            if (mSvlteSST != null) {
+                mPhone.notifyServiceStateChangedPForRegistrants(mSS);
+                mSvlteSST.notifyServiceStateChanged(mSS);
+            }
+        } else {
+            log("Broadcasting ServiceState : " + mSS);
+            mPhone.notifyServiceStateChanged(mSS);
+        }
+    }
+
+    private void notifySignalStrengthChanged(AsyncResult ar) {
+        if (isInSvlteMode()) {
+            log("onGSMSignalStrengthResult mLteSST = " + mSvlteSST + ", this = " + this);
+            if (mSvlteSST != null) {
+                setSignalStrength(ar, true);
+                mSvlteSST.onGSMSignalStrengthResult(mSignalStrength);
+            }
+        } else {
+            onSignalStrengthResult(ar, true);
+        }
+    }
+    ///@}
+
+    public boolean isSameRadioTechnologyMode(int nRadioTechnology1, int nRadioTechnology2) {
+        if ((nRadioTechnology1 == ServiceState.RIL_RADIO_TECHNOLOGY_LTE &&
+                nRadioTechnology2 == ServiceState.RIL_RADIO_TECHNOLOGY_LTE) ||
+                (nRadioTechnology1 == ServiceState.RIL_RADIO_TECHNOLOGY_GSM &&
+                nRadioTechnology2 == ServiceState.RIL_RADIO_TECHNOLOGY_GSM)) {
+            return true;
+        } else if (((nRadioTechnology1 >= ServiceState.RIL_RADIO_TECHNOLOGY_UMTS &&
+                        nRadioTechnology1 <= ServiceState.RIL_RADIO_TECHNOLOGY_EHRPD) ||
+                        nRadioTechnology1 == ServiceState.RIL_RADIO_TECHNOLOGY_HSPAP) &&
+                        ((nRadioTechnology2 >= ServiceState.RIL_RADIO_TECHNOLOGY_UMTS &&
+                        nRadioTechnology2 <= ServiceState.RIL_RADIO_TECHNOLOGY_EHRPD) ||
+                        nRadioTechnology2 == ServiceState.RIL_RADIO_TECHNOLOGY_HSPAP)) {
+            return true;
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isHPlmn(String plmn) {
+        //follow the behavior of modem, according to the length of plmn to compare mcc/mnc
+        //ex: mccmnc: 334030 but plmn:33403 => still be HPLMN
+        String mccmnc = getSIMOperatorNumeric();
+        if (plmn == null) return false;
+
+        if (mccmnc == null || mccmnc.equals("")) {
+            log("isHPlmn getSIMOperatorNumeric error: " + mccmnc);
+            return false;
+        }
+
+        if (plmn.equals(mccmnc)) {
+            return true;
+        } else {
+            if (plmn.length() == 5 && mccmnc.length() == 6
+                && plmn.equals(mccmnc.substring(0, 5))) {
+                return true;
+            }
+        }
+
+        /* ALPS01473952 check if plmn in customized EHPLMN table */
+        if (mPhone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM) {
+            boolean isServingPlmnInGroup = false;
+            boolean isHomePlmnInGroup = false;
+
+            if ((plmn != null) && mccmnc == null) {
+                for (int i = 0; i < customEhplmn.length; i++) {
+                    //reset flag
+                    isServingPlmnInGroup = false;
+                    isHomePlmnInGroup = false;
+
+                    //check if target plmn or home plmn in this group
+                    for (int j = 0; j < customEhplmn[i].length; j++) {
+                        if (plmn.equals(customEhplmn[i][j])) {
+                            isServingPlmnInGroup = true;
+                        }
+                        if (mccmnc.equals(customEhplmn[i][j])) {
+                            isHomePlmnInGroup = true;
+                        }
+                    }
+
+                    //if target plmn and home plmn both in the same group
+                    if ((isServingPlmnInGroup == true) &&
+                            (isHomePlmnInGroup == true)) {
+                        log("plmn:" + plmn + "is in customized ehplmn table");
+                        return true;
+                    }
+                }
+            }
+        }
+        /* ALPS01473952 END */
+
+        return false;
+    }
+
+    ///M: For NITZ in Svlte. sReceiveNitz index is 0,1,2,3
+    // MTK TODO: dubious functionality, disabled for now
+    /*
+    private void setReceivedNitz(int phoneId, boolean receivedNitz) {
+        int index = 0;
+        if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_1) {
+            index = getPhoneInstanceCount() - 2;
+        } else if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_2) {
+            index = getPhoneInstanceCount() - 1;
+        } else {
+            index = phoneId;
+        }
+        log("setReceivedNitz : phoneId = " + phoneId + "index = " + index);
+        sReceiveNitz[index] = receivedNitz;
+    }
+
+    private boolean getReceivedNitz() {
+        log("setReceivedNitz : mPhone.getPhoneId() = " + mPhone.getPhoneId());
+        if (mPhone.getPhoneId() == SubscriptionManager.LTE_DC_PHONE_ID_1) {
+            return sReceiveNitz[getPhoneInstanceCount() - 2];
+        } else if (mPhone.getPhoneId() == SubscriptionManager.LTE_DC_PHONE_ID_2) {
+            return sReceiveNitz[getPhoneInstanceCount() - 1];
+        } else {
+            return sReceiveNitz[mPhone.getPhoneId()];
+        }
+    }
+    */
+
+    /**
+     * Show Operator Alpha Long in special rules for HK MCC+MNC.
+     *
+     * @param oriOperatorLong regular operator alpha long
+     * @param numeric MCC+MNC
+     * @return If in HK MCC+MNC, return operator alpha long in
+     *         special rules. If not,return regular operator alpha long
+     */
+    private String updateOpAlphaLongForHK(String oriOperatorLong, String numeric)  {
+        log("oriOperatorLong= " + oriOperatorLong + " numeric= " + numeric);
+
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            int phoneNum = TelephonyManager.getDefault().getPhoneCount();
+            int[] cardType = new int[phoneNum];
+            int targetCardType;
+            String strOperatorOverride = "";
+            boolean isCdma4GSim = false;
+
+            if (numeric != null && ((numeric.equals("45403")) || (numeric.equals("45404")))) {
+                cardType = UiccController.getInstance().getC2KWPCardType();
+                int phoneId = SvlteUtils.getSlotId(mPhone.getPhoneId());
+                log("EVENT_POLL_STATE_OPERATOR, phoneId = " + phoneId);
+                targetCardType = cardType[phoneId];
+
+                if (((targetCardType & UiccController.CARD_TYPE_RUIM) > 0
+                        || (targetCardType & UiccController.CARD_TYPE_CSIM) > 0)
+                     && ((targetCardType & UiccController.CARD_TYPE_USIM) > 0)) {
+                    isCdma4GSim = true;
+                }
+
+                // SpnOverride spnOverride = SpnOverride.getInstance();
+                if ((mSpnOverride != null) && (mSpnOverride.containsCarrier/*Ex*/(numeric))) {
+                    strOperatorOverride = mSpnOverride.getSpn/*Ex*/(numeric);
+                }
+
+                log("targetCardType= " + targetCardType
+                        + " strOperatorOverride= " + strOperatorOverride
+                        + " isCdma4GSim=" + isCdma4GSim);
+
+                if (isCdma4GSim == true) {
+                    oriOperatorLong = strOperatorOverride;
+                }
+           }
+        }
+        return oriOperatorLong;
+
     }
 }

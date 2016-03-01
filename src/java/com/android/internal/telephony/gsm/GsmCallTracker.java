@@ -72,7 +72,8 @@ public final class GsmCallTracker extends CallTracker {
     GsmConnection mConnections[] = new GsmConnection[MAX_CONNECTIONS];
     RegistrantList mVoiceCallEndedRegistrants = new RegistrantList();
     RegistrantList mVoiceCallStartedRegistrants = new RegistrantList();
-
+    // MTK
+    RegistrantList mVoiceCallIncomingIndicationRegistrants = new RegistrantList();
 
     // connections dropped during last poll
     ArrayList<GsmConnection> mDroppedDuringPoll
@@ -1004,5 +1005,36 @@ public final class GsmCallTracker extends CallTracker {
     @Override
     public PhoneConstants.State getState() {
         return mState;
+    }
+
+    // MTK
+
+    public void registerForVoiceCallIncomingIndication(Handler h, int what, Object obj) {
+        Registrant r = new Registrant(h, what, obj);
+        mVoiceCallIncomingIndicationRegistrants.add(r);
+    }
+
+    public void unregisterForVoiceCallIncomingIndication(Handler h) {
+        mVoiceCallIncomingIndicationRegistrants.remove(h);
+    }
+
+    void hangupAll() {
+        if (Phone.DEBUG_PHONE) log("hangupAll");
+        mCi.hangupAll(obtainCompleteMessage());
+
+        if (!mRingingCall.isIdle()) {
+            mRingingCall.onHangupLocal();
+        }
+        if (!mForegroundCall.isIdle()) {
+            mForegroundCall.onHangupLocal();
+        }
+        if (!mBackgroundCall.isIdle()) {
+            mBackgroundCall.onHangupLocal();
+        }
+    }
+
+    public void setIncomingCallIndicationResponse(boolean accept) {
+        Rlog.w(LOG_TAG, "setIncomingCallIndicationResponse(" + accept + "): stub!");
+        // mHelper.CallIndicationResponse(accept);
     }
 }

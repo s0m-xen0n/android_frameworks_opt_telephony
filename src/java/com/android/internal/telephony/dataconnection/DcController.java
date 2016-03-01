@@ -18,6 +18,7 @@ package com.android.internal.telephony.dataconnection;
 
 import android.net.LinkAddress;
 import android.net.NetworkUtils;
+import android.net.LinkProperties;
 import android.net.LinkProperties.CompareResult;
 import android.os.AsyncResult;
 import android.os.Build;
@@ -26,6 +27,7 @@ import android.os.Message;
 import android.os.SystemClock;
 import android.telephony.DataConnectionRealTimeInfo;
 import android.telephony.Rlog;
+import android.text.TextUtils;
 
 import com.android.internal.telephony.DctConstants;
 import com.android.internal.telephony.PhoneBase;
@@ -34,9 +36,15 @@ import com.android.internal.telephony.dataconnection.DataConnection.UpdateLinkPr
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+// VoLTE
+import com.mediatek.internal.telephony.PcscfInfo;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 
 /**
@@ -72,6 +80,14 @@ class DcController extends StateMachine {
     int mOverallDataConnectionActiveState = DATA_CONNECTION_ACTIVE_UNKNOWN;
 
     private DccDefaultState mDccDefaultState = new DccDefaultState();
+
+    // MTK
+    /// M: [C2K] add for PCModem feature, the feature is only enabled in CDMA.
+    private static final int DATA_CONNECTION_PC_MODEM_CONNECTED = 3;
+    private static final int DATA_CONNECTION_PC_MODEM_DISCONNECTED = 4;
+    private static final String REASON_PC_MODEM_CONNECTED = "pcModemConnected";
+    private static final String REASON_PC_MODEM_DISCONNECTED = "pcModemDisconnected";
+    private boolean mPcModemConnected;
 
     /**
      * Constructor.
@@ -127,6 +143,13 @@ class DcController extends StateMachine {
         }
     }
 
+    // MTK
+    void getDataCallListForSimLoaded() {
+        log("getDataCallList");
+        mPhone.mCi.getDataCallList(obtainMessage(
+                DataConnection.EVENT_DATA_STATE_CHANGED_FOR_LOADED));
+    }
+
     private class DccDefaultState extends State {
         @Override
         public void enter() {
@@ -177,6 +200,18 @@ class DcController extends StateMachine {
                                     " exception; likely radio not available, ignore");
                     }
                     break;
+
+                // MTK
+                case DataConnection.EVENT_DATA_STATE_CHANGED_FOR_LOADED:
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception == null) {
+                        onDataStateChanged((ArrayList<DataCallResponse>) ar.result, true);
+                    } else {
+                        log("DccDefaultState: EVENT_DATA_STATE_CHANGED_FOR_LOADED:" +
+                                    " exception; likely radio not available, ignore");
+                    }
+                    mDct.sendMessage(obtainMessage(DctConstants.EVENT_SETUP_DATA_WHEN_LOADED));
+                    break;
             }
             return HANDLED;
         }
@@ -186,12 +221,35 @@ class DcController extends StateMachine {
          * @param dcsList as sent by RIL_UNSOL_DATA_CALL_LIST_CHANGED
          */
         private void onDataStateChanged(ArrayList<DataCallResponse> dcsList) {
+            onDataStateChanged(dcsList, false);
+        }
+
+        // MTK
+        /**
+         * Process the new list of "known" Data Calls
+         * @param dcsList as sent by RIL_UNSOL_DATA_CALL_LIST_CHANGED
+         */
+        private void onDataStateChanged(ArrayList<DataCallResponse> dcsList,
+                boolean isRecordLoaded) {
             if (DBG) {
                 lr("onDataStateChanged: dcsList=" + dcsList
                         + " mDcListActiveByCid=" + mDcListActiveByCid);
             }
             if (VDBG) {
                 log("onDataStateChanged: mDcListAll=" + mDcListAll);
+            }
+
+            // MTK
+            /// M: [IRAT] update DC cid for IRAT
+            log("onDataStateChanged: updateDcInfo");
+            updateDcInfo(dcsList);
+
+            /// M: [C2K] pre-check data state to see if it is caused by PCModem.
+            if (mPhone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA) {
+                if (preCheckDataState(dcsList)) {
+                    log("onDataStateChanged: pre-check state return for CDMA.");
+                    return;
+                }
             }
 
             // Create hashmap of cid to DataCallResponse
@@ -225,6 +283,12 @@ class DcController extends StateMachine {
                 if (dc == null) {
                     // UNSOL_DATA_CALL_LIST_CHANGED arrived before SETUP_DATA_CALL completed.
                     loge("onDataStateChanged: no associated DC yet, ignore");
+
+                    // MTK: Deactivate unlinked PDP context
+                    loge("Deactivate unlinked PDP context.");
+                    mDct.deactivatePdpByCid(newState.cid);
+                    // MTK
+
                     continue;
                 }
 
@@ -278,6 +342,12 @@ class DcController extends StateMachine {
                                             if (NetworkUtils.addressTypeMatches(
                                                     removed.getAddress(),
                                                     added.getAddress())) {
+                                                // MTK
+                                                if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()
+                                                        && SvlteUtils.isActiveSvlteMode(mPhone)) {
+                                                    log("[IRAT_DcController] Don't set cleanup flag.");
+                                                    break;
+                                                }
                                                 needToClean = true;
                                                 break;
                                             }
@@ -313,6 +383,42 @@ class DcController extends StateMachine {
                                 }
                             }
                         }
+
+                        // MTK
+                        // VOLTE, Default PDN modification
+                        if (dc.mDefaultBearer.cid != -1) {
+                            ApnSetting dcApnSetting = dc.getApnSetting();
+                            if (dcApnSetting != null) {
+                                for (String apnType: dcApnSetting.types) {
+                                    if (TextUtils.equals(apnType, PhoneConstants.APN_TYPE_IMS)) {
+                                        PcscfInfo oldPcscfInfo = dc.mDefaultBearer.pcscfInfo;
+                                        PcscfInfo newPcscfInfo = newState.defaultBearerDataCallState.pcscfInfo;
+                                        log("check if pcscf is changed, old=" + oldPcscfInfo
+                                                + ", new=" + newPcscfInfo);
+
+                                        boolean bChanged = false;
+                                        if ((null == oldPcscfInfo && null != newPcscfInfo)
+                                                || (null != oldPcscfInfo && null == newPcscfInfo)) {
+                                            bChanged = true;
+                                        } else if (null != oldPcscfInfo && null != newPcscfInfo) {
+                                            bChanged = !(oldPcscfInfo.toString().equals(
+                                                    newPcscfInfo.toString()));
+                                        }
+
+                                        if (bChanged) {
+                                            log("onDataStateChanged pcscfInfo addr changed");
+                                                    dc.mDefaultBearer.pcscfInfo = newPcscfInfo;
+                                            dc.notifyIMSDefaultPdnModification();
+                                        } else {
+                                            log("onDataStateChanged pcscfInfo addr not changed");
+                                        }
+                                        break;
+                                    }
+                                }
+                            } else {
+                                loge("get null ApnSetting for dc: " + dc);
+                            }
+                        }
                     }
                 }
 
@@ -338,6 +444,10 @@ class DcController extends StateMachine {
                 mDct.sendStopNetStatPoll(DctConstants.Activity.DORMANT);
                 newOverallDataConnectionActiveState = DATA_CONNECTION_ACTIVE_PH_LINK_DORMANT;
             } else {
+                // MTK
+                //ALPS01782373
+                mDct.sendStartNetStatPoll(DctConstants.Activity.NONE);
+
                 if (DBG) {
                     log("onDataStateChanged: Data Activity updated to NONE. " +
                             "isAnyDataCallActive = " + isAnyDataCallActive +
@@ -437,4 +547,139 @@ class DcController extends StateMachine {
         pw.println(" mDcListAll=" + mDcListAll);
         pw.println(" mDcListActiveByCid=" + mDcListActiveByCid);
     }
+
+    // MTK
+
+    /** M: if new IP contains old IP, we treat is equally
+     *  This is to handle that network response both IPv4 and IPv6 IP,
+     *  but APN settings is IPv4 or IPv6
+     */
+    private boolean isIpMatched(LinkProperties oldLp, LinkProperties newLp) {
+        if (oldLp.isIdenticalAddresses(newLp)) {
+            return true;
+        } else {
+            if (DBG) log("isIpMatched: address count is different but matched");
+            return newLp.getAddresses().containsAll(oldLp.getAddresses());
+        }
+    }
+
+    /**
+     * M: [C2K] pre-check data state to see if the change is caused by PCModem
+     * connected/disconnected, cleanup all connections if PCModem is connected
+     * and try to restore data connections when PCModem is disconnected.
+     * @param dcsList data call response from RILD.
+     * @return True if the change is caused by PCModem connected/disconnected,
+     *         or else return false.
+     */
+    private boolean preCheckDataState(ArrayList<DataCallResponse> dcsList) {
+        if (dcsList.size() != 0) {
+            log("preCheckForC2K  active = " + dcsList.get(0).active);
+            if (dcsList.get(0).active == DATA_CONNECTION_PC_MODEM_CONNECTED) {
+                if (DBG) {
+                    log("preCheckForC2K PC Modem enabled");
+                }
+                mPcModemConnected = true;
+                mDct.sendMessage(mDct.obtainMessage(DctConstants.EVENT_CLEAN_UP_ALL_CONNECTIONS,
+                        REASON_PC_MODEM_CONNECTED));
+                return true;
+            } else if (dcsList.get(0).active == DATA_CONNECTION_PC_MODEM_DISCONNECTED) {
+                log("preCheckForC2K PC Modem disconnected");
+                mPcModemConnected = false;
+                mDct.sendMessage(mDct.obtainMessage(DctConstants.EVENT_TRY_SETUP_DATA,
+                        REASON_PC_MODEM_DISCONNECTED));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * M: [C2K] whether PCModem is connected.
+     * @return True if PCModem is connected, or else false.
+     */
+    boolean isPcModemConnected() {
+        return mPcModemConnected;
+    }
+
+    //M: [C2K][IRAT] need update phone when Rat finished @{
+    void updatePhone(PhoneBase newPhone) {
+        log("DcController, updatePhone");
+        if (mPhone != null) {
+            mPhone.mCi.unregisterForRilConnected(getHandler());
+            mPhone.mCi.unregisterForDataNetworkStateChanged(getHandler());
+        }
+        mPhone = newPhone;
+        mPhone.mCi.registerForRilConnected(getHandler(),
+                DataConnection.EVENT_RIL_CONNECTED, null);
+        mPhone.mCi.registerForDataNetworkStateChanged(getHandler(),
+                DataConnection.EVENT_DATA_STATE_CHANGED, null);
+
+        if (mDcTesterDeactivateAll != null) {
+            mDcTesterDeactivateAll.updatePhone(newPhone);
+        }
+    }
+
+    /**
+     * M: [C2K][IRAT] Update active DC cid if it is not same as datacallresponse's.
+     * Because that the cid of DC may change when IRAT between LTE and EHRPD/HRPD
+     * @param dcsList
+     */
+    private void updateDcInfo(ArrayList<DataCallResponse> dcsList) {
+        if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport() || !SvlteUtils.isActiveSvlteMode(mPhone)) {
+            return;
+        }
+        //To record cids need to be changed, key is old cid, value is new cid.
+        HashMap<Integer, Integer> changeCids = new HashMap<Integer, Integer>();
+        for (DataConnection dc : mDcListActiveByCid.values()) {
+            for (DataCallResponse newState : dcsList) {
+                int ifId = getIfIdFromIfName(newState.ifname);
+                if (ifId != -1) {
+                    if (dc.getDataConnectionId() == ifId) {
+                        log("[IRAT_DcController] updateDcInfo: ifId = " + ifId + ", dc.getCid() = "
+                                + dc.getCid() + ", newState.cid = " + newState.cid);
+                        if (dc.getCid() != newState.cid) {
+                            changeCids.put(dc.getCid(), newState.cid);
+                        }
+                    }
+                }
+            }
+        }
+        //Update cid
+        for (int cid : changeCids.keySet()) {
+            DataConnection dc = mDcListActiveByCid.get(cid);
+            if (dc != null) {
+                //NOTE: Need consider to make mDcListActiveByCid to be a queue to guarantee
+                //      the order of dc is consistent with the order of addition of them.
+                //      Otherwise can't handle the situation that changeCids is [0:1, 1:2].
+                removeActiveDcByCid(dc);
+                log("[IRAT_DcController] updateDcInfo: cid " + dc.mCid
+                        + " change to " + changeCids.get(cid));
+                dc.mCid = changeCids.get(cid);
+                addActiveDcByCid(dc);
+            }
+        }
+        log("[IRAT_DcController] updateDcInfo: mDcListActiveByCid = " + mDcListActiveByCid);
+    }
+
+    /**
+     * M: [C2K][IRAT] Convert interface name to interface id.
+     * @param ifName
+     * @return interface id
+     */
+    private int getIfIdFromIfName(String ifName) {
+        log("[IRAT_DcController] getIfIdFromIfName, ifName = " + ifName);
+        int ifIdInt = -1;
+        if (ifName != null && ifName.length() >= 1) {
+            String ifIdString = ifName.substring(ifName.length() - 1);
+            log("[IRAT_DcController] updateDcInfo: ifIdString = " + ifIdString);
+            try {
+                ifIdInt = Integer.valueOf(ifIdString);
+            } catch (NumberFormatException e) {
+                loge("[IRAT_DcController] updateDcInfo," +
+                        " the last char of interface id is not a number!");
+            }
+        }
+        return ifIdInt;
+    }
+    //M: }@
 }

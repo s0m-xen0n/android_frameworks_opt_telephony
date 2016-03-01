@@ -155,7 +155,8 @@ public class IccSmsInterfaceManager {
         }
     };
 
-    protected IccSmsInterfaceManager(PhoneBase phone) {
+    // needed by MTK
+    public IccSmsInterfaceManager(PhoneBase phone) {
         mPhone = phone;
         mContext = phone.getContext();
         mAppOps = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);

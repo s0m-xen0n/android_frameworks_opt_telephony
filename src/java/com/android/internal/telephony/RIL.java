@@ -2482,7 +2482,8 @@ public class RIL extends BaseCommands implements CommandsInterface {
         }
     }
 
-    protected void sendScreenState(boolean on) {
+    // MTK: public is needed by MTK
+    public void sendScreenState(boolean on) {
         RILRequest rr = RILRequest.obtain(RIL_REQUEST_SCREEN_STATE, null);
         rr.mParcel.writeInt(1);
         rr.mParcel.writeInt(on ? 1 : 0);
@@ -3787,13 +3788,36 @@ public class RIL extends BaseCommands implements CommandsInterface {
         return cardStatus;
     }
 
+    // MTK
     protected Object
     responseSimRefresh(Parcel p) {
         IccRefreshResponse response = new IccRefreshResponse();
 
+        int numInts = p.readInt();
+        int i = 0;
+        int files_num = 0;
+
+        if (SystemProperties.get("ro.mtk_wifi_calling_ril_support").equals("1")) {
+            response.sessionId = p.readInt();
+            files_num = numInts - 2; //sessionid + refresh type
+        } else {
+            files_num = numInts - 1; //refresh type
+        }
+        riljLog("files_num: " + files_num);
+        response.efId = new int[files_num];
         response.refreshResult = p.readInt();
-        response.efId   = p.readInt();
+
+        for (i = 0; i < files_num; i++) {
+            response.efId[i] = p.readInt();
+            riljLog("EFId " + i + ":" + response.efId[i]);
+        }
         response.aid = p.readString();
+
+        if (SystemProperties.get("ro.mtk_wifi_calling_ril_support").equals("1")) {
+            riljLog("responseSimRefresh, sessionId=" + response.sessionId + ", result=" + response.refreshResult
+                + ", efId=" + response.efId + ", aid=" + response.aid);
+        }
+
         return response;
     }
 
@@ -5097,5 +5121,247 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 + ' ' + resetType);
 
         send(rr);
+    }
+
+    // MTK
+
+    /* M: SS part */
+    // mtk00732 add for getCOLP
+    public void
+    getCOLP(Message result) {
+        RILRequest rr
+                //= RILRequest.obtain(RIL_REQUEST_GET_COLP, result, mySimId);
+                = RILRequest.obtain(RIL_REQUEST_GET_COLP, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+
+    // mtk00732 add for setCOLP
+    public void
+    setCOLP(boolean enable, Message result) {
+        RILRequest rr
+                //= RILRequest.obtain(RIL_REQUEST_SET_COLP, result, mySimId);
+                = RILRequest.obtain(RIL_REQUEST_SET_COLP, result);
+
+        // count ints
+        rr.mParcel.writeInt(1);
+
+        if (enable) {
+            rr.mParcel.writeInt(1);
+        } else {
+            rr.mParcel.writeInt(0);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + enable);
+
+        send(rr);
+    }
+
+    // mtk00732 add for getCOLR
+    public void
+    getCOLR(Message result) {
+        RILRequest rr
+                //= RILRequest.obtain(RIL_REQUEST_GET_COLR, result, mySimId);
+                = RILRequest.obtain(RIL_REQUEST_GET_COLR, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+    /* M: SS part end */
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void queryUtkSetupMenuFromMD(String contents, Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RILConstants.RIL_REQUEST_QUERY_UTK_MENU_FROM_MD, response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void queryStkSetUpMenuFromMD(String contents, Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RILConstants.RIL_REQUEST_QUERY_STK_MENU_FROM_MD, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    public void setBandMode (int[] bandMode, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SET_BAND_MODE, response);
+
+        rr.mParcel.writeInt(3);
+        rr.mParcel.writeInt(bandMode[0]);
+        rr.mParcel.writeInt(bandMode[1]);
+        rr.mParcel.writeInt(bandMode[2]);
+
+        Rlog.d(RILJ_LOG_TAG, "Set band modes: " + bandMode[1] + ", " + bandMode[2]);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                 + " " + bandMode);
+
+        send(rr);
+    }
+
+    public void
+    changeBarringPassword(String facility, String oldPwd, String newPwd,
+        String newCfm, Message result) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_CHANGE_BARRING_PASSWORD, result, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CHANGE_BARRING_PASSWORD, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        rr.mParcel.writeInt(4);
+        rr.mParcel.writeString(facility);
+        rr.mParcel.writeString(oldPwd);
+        rr.mParcel.writeString(newPwd);
+        rr.mParcel.writeString(newCfm);
+        send(rr);
+    }
+
+    @Override
+    public void getUtkLocalInfo(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_LOCAL_INFO, result);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void requestUtkRefresh(int refreshType, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_UTK_REFRESH, result);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(refreshType);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void reportUtkServiceIsRunning(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_REPORT_STK_SERVICE_IS_RUNNING, result);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void profileDownload(String profile, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_STK_SET_PROFILE, response);
+
+        rr.mParcel.writeString(profile);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+        RILRequest rr = RILRequest.obtain(
+            RILConstants.RIL_REQUEST_STK_HANDLE_CALL_SETUP_REQUESTED_FROM_SIM,
+            response);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(accept ? 1 : 0);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + (accept ? 1 : 0));
+        }
+
+        send(rr);
+    }
+
+    public void queryModemType(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_QUERY_MODEM_TYPE, response);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void storeModemType(int modemType, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_STORE_MODEM_TYPE, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(modemType);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void reloadModemType(int modemType, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RELOAD_MODEM_TYPE, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(modemType);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    // Added by M begin
+    @Override
+    public void
+    iccGetATR(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SIM_GET_ATR, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+
+    public void
+    iccOpenChannelWithSw(String AID, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SIM_OPEN_CHANNEL_WITH_SW, result);
+
+        rr.mParcel.writeString(AID);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> iccOpenChannelWithSw: " + requestToString(rr.mRequest)
+                + " " + AID);
+
+        send(rr);
+    }
+
+    /**
+     * Set the xTK mode.
+     * @param mode The xTK mode.
+     */
+    public void setStkSwitchMode(int mode) { // Called by SvlteRatController
+        if (RILJ_LOGD) {
+            riljLog("setStkSwitchMode=" + mode + " old value=" + mStkSwitchMode);
+        }
+        mStkSwitchMode = mode;
+    }
+
+    /**
+     * Set the UTK Bip Ps type .
+     * @param mBipPsType The Bip type.
+     */
+    public void setBipPsType(int type) { // Called by SvltePhoneProxy
+        if (RILJ_LOGD) {
+            riljLog("setBipPsType=" + type + " old value=" + mBipPsType);
+        }
+        mBipPsType = type;
     }
 }

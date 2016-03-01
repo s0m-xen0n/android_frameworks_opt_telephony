@@ -30,6 +30,9 @@ ifneq ($(BOARD_RIL_CLASS),)
 LOCAL_SRC_FILES += $(call find-other-java-files,$(BOARD_RIL_CLASS))
 endif
 
+# Use SimServs.jar for VoLTE MMTelSS Package
+LOCAL_STATIC_JAVA_LIBRARIES += Simservs
+
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE := telephony-common
 

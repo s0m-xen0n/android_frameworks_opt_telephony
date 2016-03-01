@@ -40,6 +40,7 @@ import android.telephony.CellLocation;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.ServiceState;
 import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.telephony.cdma.CdmaCellLocation;
 import android.text.TextUtils;
 import android.telephony.Rlog;
@@ -71,11 +72,25 @@ import com.android.internal.telephony.UUSInfo;
 import com.android.internal.telephony.dataconnection.DcTracker;
 import com.android.internal.telephony.imsphone.ImsPhone;
 import com.android.internal.telephony.uicc.IccException;
+import com.android.internal.telephony.uicc.IccFileHandler;
 import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.RuimRecords;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UiccCardApplication;
 import com.android.internal.telephony.uicc.UiccController;
+
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+
+/// M: Customize for GPS Process.@{
+import com.mediatek.internal.telephony.cdma.IGpsProcess;
+/// @}
+import com.mediatek.internal.telephony.cdma.IPlusCodeUtils;
+import com.mediatek.internal.telephony.cdma.IUtkService;
+/// M: Customize for swip via code.@{
+import com.mediatek.internal.telephony.cdma.ViaPolicyManager;
+/// @}
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteServiceStateTracker;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -147,6 +162,18 @@ public class CDMAPhone extends PhoneBase {
 
     public static final String PROPERTY_CDMA_HOME_OPERATOR_NUMERIC =
             "ro.cdma.home.operator.numeric";
+
+    // MTK
+    private Registrant mThreeWayEcmExitRespRegistrant;
+    private boolean mIsRadioAvailable;
+
+    // AGPS
+    private IGpsProcess mGpsProcess;
+
+    // UTK Service.
+    private IUtkService mUtkService = null;
+
+    private IPlusCodeUtils mPlusCodeUtils = ViaPolicyManager.getPlusCodeUtils();
 
     public CDMAPhone(Context context, CommandsInterface ci, PhoneNotifier notifier,
             int phoneId) {
@@ -1037,8 +1064,10 @@ public class CDMAPhone extends PhoneBase {
         setVoiceMessageCount(getStoredVoiceMessageCount());
     }
 
+    // MTK needs it to be protected
     /** gets the voice mail count from preferences */
-    private int getStoredVoiceMessageCount() {
+    @Override
+    protected int getStoredVoiceMessageCount() {
         SharedPreferences sp = PreferenceManager.getDefaultSharedPreferences(mContext);
         return (sp.getInt(VM_COUNT + getSubId(), 0));
     }
@@ -1151,11 +1180,13 @@ public class CDMAPhone extends PhoneBase {
         super.notifyPreciseCallStateChangedP();
     }
 
-     void notifyServiceStateChanged(ServiceState ss) {
+     // needed for SVLTE
+     public void notifyServiceStateChanged(ServiceState ss) {
          super.notifyServiceStateChangedP(ss);
      }
 
-     void notifyLocationChanged() {
+     // ditto
+     public void notifyLocationChanged() {
          mNotifier.notifyCellLocation(this);
      }
 
@@ -1827,13 +1858,14 @@ public class CDMAPhone extends PhoneBase {
         }
     }
 
+    // MTK
     /**
      * Sets the "current" field in the telephony provider according to the
      * build-time operator numeric property
      *
      * @return true for success; false otherwise.
      */
-    boolean updateCurrentCarrierInProvider(String operatorNumeric) {
+    public boolean updateCurrentCarrierInProvider(String operatorNumeric) {
         log("CDMAPhone: updateCurrentCarrierInProvider called");
         if (!TextUtils.isEmpty(operatorNumeric)) {
             try {
@@ -1861,7 +1893,7 @@ public class CDMAPhone extends PhoneBase {
      *
      * @return true for success; false otherwise.
      */
-    boolean updateCurrentCarrierInProvider() {
+    public boolean updateCurrentCarrierInProvider() {
         return true;
     }
 
@@ -1967,6 +1999,9 @@ public class CDMAPhone extends PhoneBase {
             if (iccRecords != null) {
                 setSystemProperty(TelephonyProperties.PROPERTY_ICC_OPERATOR_ALPHA,
                         iccRecords.getServiceProviderName());
+                // MTK
+                TelephonyManager.from(mContext).setSimOperatorNameForPhone(
+                        mPhoneId, iccRecords.getServiceProviderName());
             }
             if (mSST != null) {
                 mSST.pollState();
@@ -1975,4 +2010,198 @@ public class CDMAPhone extends PhoneBase {
         return status;
     }
 
+    // MTK
+
+    public void registerForAllDataDisconnected(Handler h, int what, Object obj) {
+        ((DcTracker)mDcTracker)
+                .registerForAllDataDisconnected(h, what, obj);
+    }
+
+    public void unregisterForAllDataDisconnected(Handler h) {
+        ((DcTracker)mDcTracker).unregisterForAllDataDisconnected(h);
+    }
+
+    /**
+     * Support to add this API Refresh Spn Display due to configuration.
+     * change
+     */
+    public void refreshSpnDisplay() {
+        mSST.refreshSpnDisplay();
+    }
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+        Rlog.d(LOG_TAG, "switch HPF to " + enableHPF);
+        mCi.requestSwitchHPF(enableHPF, response);
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+        Rlog.d(LOG_TAG, "avoid sys " + avoidSYS);
+        mCi.setAvoidSYS(avoidSYS, response);
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+        Rlog.d(LOG_TAG, "get avoid sys list");
+        mCi.getAvoidSYSList(response);
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+        Rlog.d(LOG_TAG, "query CDMA network infor");
+        mCi.queryCDMANetworkInfo(response);
+    }
+
+    public boolean isRadioAvailable() {
+        return mIsRadioAvailable;
+    }
+
+    public String getSid() {
+        return mSST.getSid();
+    }
+
+    public String getNid() {
+        return mSST.getNid();
+    }
+
+    public String getPrl() {
+        return mSST.getPrlVersion();
+    }
+
+    /**
+     * Set MEID. The meid is only supported for 14 chars of length.
+     * @param meid the MEID value.
+     */
+    public void setMeid(String meid) {
+        Rlog.e(LOG_TAG, "setMeid() Meid = " + meid);
+        mCi.setMeid(meid, obtainMessage(EVENT_SET_MEID_DONE));
+    }
+
+    /**
+     * Set TRM.
+     * @param mode the TRM mode.
+     * @param response the responding message.
+     */
+    public void setTRM(int mode, Message response) {
+        Rlog.d(LOG_TAG, "CDMAPhone setTRM mode = " + mode);
+        mCi.setTrm(mode, response);
+    }
+
+    /**
+     * Set ARSI report threshold.
+     * @param threshold
+     *            the threshold value : 0 - 31,The smaller the value, the more
+     *            frequent reporting signal. // default value used by cp is 2.
+     */
+    public void setArsiReportThreshold(int threshold) {
+        Rlog.d(LOG_TAG, "setArsiReportThreshold between(0,31) threshold = " + threshold);
+        if (threshold < 0 || threshold > 31) {
+            Rlog.d(LOG_TAG, "setArsiReportThreshold threshold = " + threshold + " invalid");
+            return;
+        }
+        mCi.setArsiReportThreshold(threshold, null);
+    }
+
+    /**
+     * Check mcc by sid ltm_off.
+     * @param mccMnc the number of mccmnc.
+     * @return the number string.
+     */
+    public String checkMccBySidLtmOff(String mccMnc) {
+        if (mccMnc == null || mccMnc.length() == 0) {
+            return mccMnc;
+        }
+        /// M: Customize for swip via code.
+        return mPlusCodeUtils.checkMccBySidLtmOff(mccMnc);
+
+    }
+
+    /**
+     * Judge if the plus code can be formated.
+     * @param isCall if is in call.
+     * @return true for can, false for can't.
+     */
+    public boolean canFormatPlusCode(boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.canFormatPlusToIddNdd();
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.canFormatPlusCodeForSms();
+        }
+    }
+
+    /**
+     * Replace the plus code with idd.
+     * @param number the number will be handled.
+     * @param isCall if is in call.
+     * @return the number string.
+     */
+    public String replacePlusCodeWithIdd(String number, boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.replacePlusCodeWithIddNdd(number);
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCodeForSms(number);
+        }
+    }
+
+    /**
+     * Replace the idd with plus code.
+     * @param number the number will be handled.
+     * @param isCall if is in call.
+     * @return the number string.
+     */
+    public String replaceIddWithPlusCode(String number, boolean isCall) {
+        if (isCall) {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCode(number);
+        } else {
+            /// M: Customize for swip via code.
+            return mPlusCodeUtils.removeIddNddAddPlusCodeForSms(number);
+        }
+    }
+    // MTK_SWIP_C2K_END
+    // TODO phone test
+    /*public void requestPhoneTestInfo(Message response) {
+        Rlog.d(LOG_TAG, "requestPhoneTestInfo");
+        mCi.requestPhoneTestInfo(response);
+    }*/
+
+    /// @}
+    ///M: For svlte support. @{
+    /**
+     * Notify the Service State Change for svlte.
+     * @param ss The Service State will be notified
+     */
+    public void notifyServiceStateChangedForSvlte(ServiceState ss) {
+        super.notifyServiceStateChangedPForSvlte(ss);
+    }
+    /// @}
+
+    //Add for Phonebook query capacity
+    public void queryPhbStorageInfo(int type, Message response) {
+        Rlog.d(LOG_TAG, "queryPhbStorageInfo");
+        IccFileHandler fh;
+        fh = getIccFileHandler();
+        if (fh != null) {
+            fh.getPhbRecordInfo(response);
+        }
+        Rlog.d(LOG_TAG, "queryPhbStorageInfo IccFileHandler" + fh);
+    }
+
+    ///M: For svlte, to ignore phone object update if phone id is LTE_CD_PHONE_ID. @{
+    @Override
+    public void updatePhoneObject(int voiceRadioTech) {
+        if (!(CdmaFeatureOptionUtils.isCdmaLteDcSupport() &&
+                SvlteUtils.isLteDcPhoneId(mPhoneId))) {
+            PhoneFactory.getPhone(mPhoneId).updatePhoneObject(voiceRadioTech);
+        } else {
+            Rlog.d(LOG_TAG, "CDMAPhone updatePhoneObject ignore voiceRadioTech=" +
+                    voiceRadioTech + ", mPhoneId=" + mPhoneId);
+        }
+    }
+    ///@}
 }

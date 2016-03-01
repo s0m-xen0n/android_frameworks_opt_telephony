@@ -31,6 +31,7 @@ import android.os.RegistrantList;
 
 import android.telephony.TelephonyManager;
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.telephony.PhoneConstants;
@@ -123,6 +124,16 @@ public abstract class IccRecords extends Handler implements IccConstants {
 
     public static final int DEFAULT_VOICE_MESSAGE_COUNT = -2;
     public static final int UNKNOWN_VOICE_MESSAGE_COUNT = -1;
+
+    // MTK
+    /* Refine ICCID record updating by SYS PRO, 2015/03/23 {*/
+    protected static final int EVENT_GET_ICCID = 101;
+    protected static final String[] ICCRECORD_PROPERTY_ICCID = {
+        "ril.iccid.sim1",
+        "ril.iccid.sim2",
+        "ril.iccid.sim3",
+        "ril.iccid.sim4",
+    };
 
     @Override
     public String toString() {
@@ -639,7 +650,11 @@ public abstract class IccRecords extends Handler implements IccConstants {
         switch (refreshResponse.refreshResult) {
             case IccRefreshResponse.REFRESH_RESULT_FILE_UPDATE:
                 if (DBG) log("handleRefresh with SIM_FILE_UPDATED");
-                handleFileUpdate(refreshResponse.efId);
+                // CM: adapt for MTK
+                // handleFileUpdate(refreshResponse.efId);
+                for (final int efId : refreshResponse.efId) {
+                    handleFileUpdate(efId);
+                }
                 break;
             case IccRefreshResponse.REFRESH_RESULT_INIT:
                 if (DBG) log("handleRefresh with SIM_REFRESH_INIT");
@@ -928,5 +943,89 @@ public abstract class IccRecords extends Handler implements IccConstants {
         if (DBG) log("isAppStateReady : appState = " + appState);
         return (appState == AppState.APPSTATE_READY);
     }
+
+    // MTK
+
+    // Added by M begin
+    public static final int EVENT_MSISDN = 100; // MSISDN update
+
+    protected String mOldMccMnc = "";
+    // AT&T RAT balancing
+    public static final int EF_RAT_UNDEFINED = 0xFFFFFF00;
+    public static final int EF_RAT_NOT_EXIST_IN_USIM = 0x00000100;
+    public static final int EF_RAT_FOR_OTHER_CASE = 0x00000200;
+
+    // ALPS00302702 RAT balancing
+    public int getEfRatBalancing() {
+        return EF_RAT_UNDEFINED;
+    }
+
+    // MVNO-API START
+    public String getSpNameInEfSpn() {
+        return null;
+    }
+
+    public String isOperatorMvnoForImsi() {
+        return null;
+    }
+
+    public String getFirstFullNameInEfPnn() {
+        return null;
+    }
+
+    public String isOperatorMvnoForEfPnn() {
+        return null;
+    }
+
+    public String getMvnoMatchType() {
+        return null;
+    }
+    // MVNO-API END
+
+    public String getSIMCPHSOns() {
+        return null;
+    }
+
+    public String getEfGbabp() {
+        return null;
+    }
+
+    public void setEfGbabp(String gbabp, Message onComplete) {}
+
+    public byte[] getEfPsismsc() {
+        return null;
+    }
+
+    public byte[] getEfSmsp() {
+        return null;
+    }
+
+    public int getMncLength() {
+        return 0;
+    }
+
+    /**
+     * Check if the service status by indicated service.
+     *
+     * @param enService service defined in Phone.IccService
+     * @return service state
+     */
+    public Phone.IccServiceStatus getSIMServiceStatus(Phone.IccService enService) {
+        return Phone.IccServiceStatus.NOT_EXIST_IN_USIM;
+    }
+
+    public boolean isRadioAvailable() {
+          return false;
+    }
+
+    // MTK-START
+    protected void getIccIdRecord() {
+        sendMessage(obtainMessage(EVENT_GET_ICCID));
+    }
+    
+    public boolean isPhbReady() {
+        return false;
+    }
+    // MTK-END
 
 }

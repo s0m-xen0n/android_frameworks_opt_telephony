@@ -22,12 +22,16 @@ package com.android.internal.telephony.dataconnection;
 
 import com.android.internal.telephony.CommandException;
 import com.android.internal.telephony.dataconnection.ApnSetting.ApnProfileType;
+import com.android.internal.telephony.dataconnection.DataCallResponse.SetupResult;
 import com.android.internal.telephony.DctConstants;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
+import com.android.internal.telephony.PhoneFactory;
 import com.android.internal.telephony.RILConstants;
 import com.android.internal.telephony.RetryManager;
+import com.android.internal.telephony.SubscriptionController;
+import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.util.AsyncChannel;
 import com.android.internal.util.Protocol;
 import com.android.internal.util.State;
@@ -35,20 +39,25 @@ import com.android.internal.util.StateMachine;
 
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkAgent;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkMisc;
+import android.net.NetworkUtils;
 import android.net.ProxyInfo;
 import android.os.AsyncResult;
 import android.os.Build;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
+import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.provider.Settings;
 import android.telephony.Rlog;
 import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
@@ -56,16 +65,40 @@ import android.telephony.SubscriptionManager;
 import android.text.TextUtils;
 import android.util.Pair;
 import android.util.Patterns;
+import android.util.SparseBooleanArray;
 import android.util.TimeUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.net.InetAddress;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.util.Collection;
+
+import com.mediatek.internal.telephony.ITelephonyEx;
+import com.mediatek.internal.telephony.ltedc.IRilDcArbitrator;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteModeController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvltePhoneProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteSstProxy;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+//VoLTE
+import com.mediatek.internal.telephony.dataconnection.DedicateDataConnection;
+import com.mediatek.internal.telephony.DedicateDataCallState;
+import com.mediatek.internal.telephony.DedicateBearerProperties;
+import com.mediatek.internal.telephony.PcscfInfo;
+import com.mediatek.internal.telephony.PcscfAddr;
+import com.mediatek.internal.telephony.DefaultBearerConfig;
+
+
+import static android.system.OsConstants.IFA_F_TEMPORARY;
+import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 /**
  * {@hide}
@@ -117,6 +150,21 @@ public final class DataConnection extends StateMachine {
 
     protected String[] mPcscfAddr;
 
+    //SM_CAUSE
+    private boolean mIsTestSim = false;
+
+    //M:
+    private SubscriptionController mSubController = SubscriptionController.getInstance();
+
+    static final boolean MTK_FALLBACK_RETRY_SUPPORT =
+        SystemProperties.getInt("ro.mtk_fallback_retry_support", 1) == 1;
+
+    private static final String FALLBACK_DATA_RETRY_CONFIG =
+            "max_retries=13, 5000,10000,30000,60000,300000,1800000,3600000,14400000,"
+            + "28800000,28800000,28800000,28800000,28800000";
+    // private final INetworkManagementService mNetworkManager;
+    private String mInterfaceName = null;
+
     /**
      * Used internally for saving connecting parameters.
      */
@@ -129,6 +177,10 @@ public final class DataConnection extends StateMachine {
         boolean mRetryWhenSSChange;
         Message mOnCompletedMsg;
 
+        // MTK
+        //VoLTE
+        DefaultBearerConfig mDefaultBearerConfig;
+
         ConnectionParams(ApnContext apnContext, int initialMaxRetry, int profileId,
                 int rilRadioTechnology, boolean retryWhenSSChange, Message onCompletedMsg) {
             mApnContext = apnContext;
@@ -137,13 +189,22 @@ public final class DataConnection extends StateMachine {
             mRilRat = rilRadioTechnology;
             mRetryWhenSSChange = retryWhenSSChange;
             mOnCompletedMsg = onCompletedMsg;
+            mDefaultBearerConfig = new DefaultBearerConfig();
+        }
+
+        // MTK
+        ConnectionParams(ApnContext apnContext, int initialMaxRetry, int profileId,
+                int rilRadioTechnology, DefaultBearerConfig defaultBearerConfig, boolean retryWhenSSChange, Message onCompletedMsg) {
+            this(apnContext, initialMaxRetry, profileId, rilRadioTechnology, retryWhenSSChange, onCompletedMsg);
+            mDefaultBearerConfig.copyFrom(defaultBearerConfig);
         }
 
         @Override
         public String toString() {
             return "{mTag=" + mTag + " mApnContext=" + mApnContext
                     + " mInitialMaxRetry=" + mInitialMaxRetry + " mProfileId=" + mProfileId
-                    + " mRat=" + mRilRat
+                    + " mRat=" + mRilRat + " retryWhenSSChange: " + mRetryWhenSSChange
+                    + " defaultBearerConfig " + mDefaultBearerConfig
                     + " mOnCompletedMsg=" + msgToString(mOnCompletedMsg) + "}";
         }
     }
@@ -212,8 +273,24 @@ public final class DataConnection extends StateMachine {
     static final int EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED = BASE + 11;
     static final int EVENT_DATA_CONNECTION_ROAM_ON = BASE + 12;
     static final int EVENT_DATA_CONNECTION_ROAM_OFF = BASE + 13;
+    // MTK
+    static final int EVENT_DATA_STATE_CHANGED_FOR_LOADED = BASE + 14;
+    //VoLTE
+    protected static final int EVENT_PCSCF_DISCOVERY_DONE = BASE + 15;
+    //FALLBACK PDP Retry
+    static final int EVENT_FALLBACK_RETRY_CONNECTION = BASE + 16;
+    static final int EVENT_FALLBACK_GET_LAST_FAIL_DONE = BASE + 17;
+    static final int EVENT_UPDATE_PHONE = BASE + 18;
 
-    private static final int CMD_TO_STRING_COUNT = EVENT_DATA_CONNECTION_ROAM_OFF - BASE + 1;
+    static final int EVENT_IPV4_ADDRESS_REMOVED = BASE + 19;
+    static final int EVENT_IPV6_ADDRESS_REMOVED = BASE + 20;
+    static final int EVENT_IPV4_ADDRESS_UPDATED = BASE + 21;
+    static final int EVENT_IPV6_ADDRESS_UPDATED = BASE + 22;
+    static final int EVENT_ADDRESS_REMOVED = BASE + 23;
+    static final int EVENT_ADDRESS_UPDATED = BASE + 24;
+    static final int EVENT_ADDRESS_DHCP_NEEDED = BASE + 25;
+
+    private static final int CMD_TO_STRING_COUNT = EVENT_ADDRESS_DHCP_NEEDED - BASE + 1;
     private static String[] sCmdToString = new String[CMD_TO_STRING_COUNT];
     static {
         sCmdToString[EVENT_CONNECT - BASE] = "EVENT_CONNECT";
@@ -232,6 +309,21 @@ public final class DataConnection extends StateMachine {
                 "EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED";
         sCmdToString[EVENT_DATA_CONNECTION_ROAM_ON - BASE] = "EVENT_DATA_CONNECTION_ROAM_ON";
         sCmdToString[EVENT_DATA_CONNECTION_ROAM_OFF - BASE] = "EVENT_DATA_CONNECTION_ROAM_OFF";
+        // MTK
+        sCmdToString[EVENT_DATA_STATE_CHANGED_FOR_LOADED - BASE] =
+                "EVENT_DATA_STATE_CHANGED_FOR_LOADED";
+        sCmdToString[EVENT_PCSCF_DISCOVERY_DONE - BASE]= "EVENT_PCSCF_DISCOVERY_DONE";
+        sCmdToString[EVENT_FALLBACK_RETRY_CONNECTION - BASE] = "EVENT_FALLBACK_RETRY_CONNECTION";
+        sCmdToString[EVENT_FALLBACK_GET_LAST_FAIL_DONE - BASE] =
+                "EVENT_FALLBACK_GET_LAST_FAIL_DONE";
+        sCmdToString[EVENT_UPDATE_PHONE - BASE] = "EVENT_UPDATE_PHONE";
+        sCmdToString[EVENT_IPV4_ADDRESS_REMOVED - BASE]= "EVENT_IPV4_ADDRESS_REMOVED";
+        sCmdToString[EVENT_IPV6_ADDRESS_REMOVED - BASE]= "EVENT_IPV6_ADDRESS_REMOVED";
+        sCmdToString[EVENT_IPV4_ADDRESS_UPDATED- BASE]= "EVENT_IPV4_ADDRESS_UPDATED";
+        sCmdToString[EVENT_IPV6_ADDRESS_UPDATED - BASE]= "EVENT_IPV6_ADDRESS_UPDATED";
+        sCmdToString[EVENT_ADDRESS_REMOVED - BASE]= "EVENT_ADDRESS_REMOVED";
+        sCmdToString[EVENT_ADDRESS_UPDATED - BASE]= "EVENT_ADDRESS_UPDATED";
+        sCmdToString[EVENT_ADDRESS_DHCP_NEEDED - BASE] = "EVENT_ADDRESS_DHCP_NEEDED";
     }
     // Convert cmd to string or null if unknown
     static String cmdToString(int cmd) {
@@ -430,6 +522,9 @@ public final class DataConnection extends StateMachine {
         mNetworkInfo.setRoaming(ss.getDataRoaming());
         mNetworkInfo.setIsAvailable(true);
 
+        // MTK
+        mRetryManager.resetRetryCount();
+
         addState(mDefaultState);
             addState(mInactiveState, mDefaultState);
             addState(mActivatingState, mDefaultState);
@@ -483,6 +578,16 @@ public final class DataConnection extends StateMachine {
                     mRetryManager.configure(5, 2000, 1000);
                 }
             } else {
+                // M: [epdg] check the apn type to retry for epdg
+                for (ApnContext apnContext : mApnContexts) {
+                    if (TextUtils.equals(PhoneConstants.APN_TYPE_IMS,
+                        apnContext.getApnType())) {
+                        log("configureRetry: IMS for epdg, no retry by mobile. ");
+                        mRetryManager.configure(0, 2000, 1000);
+                        return;
+                    }
+                }
+
                 if (!mRetryManager.configure(SECONDARY_DATA_RETRY_CONFIG)) {
                     // Should never happen, log an error and default to a simple sequence.
                     loge("configureRetry: Could note configure using " +
@@ -553,6 +658,28 @@ public final class DataConnection extends StateMachine {
         Message msg = obtainMessage(EVENT_SETUP_DATA_CONNECTION_DONE, cp);
         msg.obj = cp;
 
+        //M: Support for ePDG @{
+        boolean isHandover = false;
+        if (SystemProperties.get("ro.mtk_epdg_support").equals("1")) {
+            for (ApnContext apnContext : mApnContexts) {
+                if (TextUtils.equals(PhoneConstants.APN_TYPE_IMS,
+                    apnContext.getApnType())) {
+                    isHandover = apnContext.isHandover();
+                    break;
+                } else if (TextUtils.equals(PhoneConstants.APN_TYPE_MMS,
+                    apnContext.getApnType())) {
+                    isHandover = apnContext.isHandover();
+                    break;
+                }
+            }
+            if (isHandover) {
+                SystemProperties.set("net.handover.flag", "true");
+            }
+        }
+        if (DBG) log("isHandover:" + isHandover);
+        msg.arg1 = (isHandover) ? 1 : 0;
+        //@}
+
         int authType = mApnSetting.authType;
         if (authType == -1) {
             authType = TextUtils.isEmpty(mApnSetting.user) ? RILConstants.SETUP_DATA_AUTH_NONE
@@ -566,12 +693,24 @@ public final class DataConnection extends StateMachine {
             protocol = mApnSetting.protocol;
         }
 
-        mPhone.mCi.setupDataCall(
-                getDataTechnology(cp.mRilRat),
-                Integer.toString(dataProfileId),
+        // MTK
+        if (1 == cp.mDefaultBearerConfig.mIsValid ) {   //request from VA for VoLTE
+            DefaultBearerConfig defaultBearerConfig = new DefaultBearerConfig();
+            defaultBearerConfig.copyFrom(cp.mDefaultBearerConfig);
+
+            mPhone.mCi.setupDataCall(Integer.toString(cp.mRilRat + 2),
+                Integer.toString(cp.mProfileId),
                 mApnSetting.apn, mApnSetting.user, mApnSetting.password,
                 Integer.toString(authType),
-                protocol, msg);
+                protocol, String.valueOf(mId + 1), defaultBearerConfig, msg);
+        } else {
+            /// M: [C2K][IRAT] Use RilArbitrator to setup data.
+            setupDataCall(Integer.toString(cp.mRilRat + 2),
+                Integer.toString(cp.mProfileId), mApnSetting.apn,
+                mApnSetting.user, mApnSetting.password,
+                Integer.toString(authType), protocol, String.valueOf(mId + 1),
+                msg);
+        }
     }
 
     /**
@@ -609,12 +748,17 @@ public final class DataConnection extends StateMachine {
                 discReason = RILConstants.DEACTIVATE_REASON_PDP_RESET;
             }
         }
-        if (mPhone.mCi.getRadioState().isOn()
-                || (mPhone.getServiceState().getRilDataRadioTechnology()
-                        == ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN )) {
+        if (mPhone.mCi.getRadioState().isOn()) {
             if (DBG) log("tearDownData radio is on, call deactivateDataCall");
-            mPhone.mCi.deactivateDataCall(mCid, discReason,
-                    obtainMessage(EVENT_DEACTIVATE_DONE, mTag, 0, o));
+            if (mPhone.getServiceState().getRilDataRadioTechnology()
+                        == ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN ) {
+                /// M: [C2K][IRAT] Use RilArbitrator to deactivate data.
+                deactivateDataCall(mCid, discReason,
+                        obtainMessage(EVENT_DEACTIVATE_DONE, mTag, 0, o));
+            } else {
+                mPhone.mCi.deactivateDataCall(mCid, discReason,
+                        obtainMessage(EVENT_DEACTIVATE_DONE, mTag, 0, o));
+            }
         } else {
             if (DBG) log("tearDownData radio is off sendMessage EVENT_DEACTIVATE_DONE immediately");
             AsyncResult ar = new AsyncResult(o, null, null);
@@ -758,6 +902,12 @@ public final class DataConnection extends StateMachine {
     private void clearSettings() {
         if (DBG) log("clearSettings");
 
+        // MTK
+        //for SM_CAUSE, special case for retry before initial
+        if (mDcFailCause != DcFailCause.LOST_CONNECTION) {
+            mRetryManager.resetRetryCount();
+        }
+
         mCreateTime = -1;
         mLastFailTime = -1;
         mLastFailCause = DcFailCause.NONE;
@@ -769,6 +919,12 @@ public final class DataConnection extends StateMachine {
         mApnContexts.clear();
         mApnSetting = null;
         mDcFailCause = null;
+
+        //VoLTE
+        mPcscfInfo = null;
+        mDedicateDataConnections.clear();
+        mConcatenatedBearers.clear();
+        mDefaultBearer.clear();
     }
 
     /**
@@ -814,6 +970,82 @@ public final class DataConnection extends StateMachine {
             mPcscfAddr = response.pcscf;
 
             result = updateLinkProperty(response).setupResult;
+
+            // MTK
+            //VoLTE
+            if (response.pcscf != null && response.pcscf.length > 0)
+                mPcscfInfo = new PcscfInfo(PcscfInfo.IMC_PCSCF_ACQUIRE_BY_PCO, response.pcscf);
+
+            for (DedicateDataCallState dedicateCallState : response.concatenateDataCallState) {
+                DedicateBearerProperties dedicateBearerProperties = new DedicateBearerProperties();
+                dedicateBearerProperties.setProperties(dedicateCallState);
+                mConcatenatedBearers.add(dedicateBearerProperties);
+                mDefaultBearer.concatenateBearers.add(dedicateBearerProperties);
+            }
+
+            // M: IPv6 RA update
+            mInterfaceName = response.ifname.toString();
+            log("onSetupConnectionCompleted: ifname-" + mInterfaceName);
+
+            log("!!!1" + response.defaultBearerDataCallState);
+            mDefaultBearer.setProperties(response.defaultBearerDataCallState);
+            log("!!!2" + mDefaultBearer);
+            //Clear deactiveCid
+            clearCidArray();
+        }
+
+        return result;
+    }
+
+    // MTK; wow this duplication...
+    private DataCallResponse.SetupResult onSetupFallbackConnection(AsyncResult ar) {
+        DataCallResponse response = (DataCallResponse) ar.result;
+        ConnectionParams cp = (ConnectionParams) ar.userObj;
+        DataCallResponse.SetupResult result;
+
+        if (cp.mTag != mTag) {
+            if (DBG) {
+                log("onSetupFallbackConnection stale cp.tag=" + cp.mTag + ", mtag=" + mTag);
+            }
+            result = DataCallResponse.SetupResult.ERR_Stale;
+        } else {
+            if (DBG) {
+                log("onSetupFallbackConnection received DataCallResponse: " + response);
+            }
+            mCid = response.cid;
+
+            mPcscfAddr = response.pcscf;
+
+            //To pass the error check since we have at least one IPv4 or IPv6 is accepted
+            //store the temp status
+            int tempStatus = response.status;
+            response.status = DcFailCause.NONE.getErrorCode();
+
+            result = updateLinkProperty(response).setupResult;
+
+            response.status = tempStatus;
+
+            //VoLTE - but not use for FALLBACK retry
+            if (response.pcscf != null && response.pcscf.length > 0) {
+                mPcscfInfo = new PcscfInfo(PcscfInfo.IMC_PCSCF_ACQUIRE_BY_PCO, response.pcscf);
+            }
+
+            for (DedicateDataCallState dedicateCallState : response.concatenateDataCallState) {
+                DedicateBearerProperties dedicateBearerProperties = new DedicateBearerProperties();
+                dedicateBearerProperties.setProperties(dedicateCallState);
+                mConcatenatedBearers.add(dedicateBearerProperties);
+                mDefaultBearer.concatenateBearers.add(dedicateBearerProperties);
+            }
+
+            // M: IPv6 RA update
+            mInterfaceName = response.ifname.toString();
+
+            log("onSetupFallbackConnection: ifname-" + mInterfaceName);
+            log("!!!1" + response.defaultBearerDataCallState);
+            mDefaultBearer.setProperties(response.defaultBearerDataCallState);
+            log("!!!2" + mDefaultBearer);
+            //Clear deactiveCid
+            clearCidArray();
         }
 
         return result;
@@ -923,6 +1155,19 @@ public final class DataConnection extends StateMachine {
         NetworkCapabilities result = new NetworkCapabilities();
         result.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR);
 
+        // MTK
+        // M: check if data enabled
+        boolean isDataEnable = mDct.getDataEnabled();
+        log("makeNetworkCapabilities: check data enable:" + isDataEnable);
+
+        // M: [C2K][IRAT] Change LTE_DC_SUB_ID to IRAT support slot sub ID for IRAT.
+        int subId = mPhone.getSubId();
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            subId = SvlteUtils.getSvlteSubIdBySubId(subId);
+        }
+
+        int phoneId = mSubController.getPhoneId(mSubController.getDefaultDataSubId());
+
         if (mApnSetting != null) {
             for (String type : mApnSetting.types) {
                 switch (type) {
@@ -934,10 +1179,22 @@ public final class DataConnection extends StateMachine {
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IMS);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_CBS);
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IA);
+                        // MTK
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_DM);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_WAP);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_NET);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_CMMAIL);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_TETHERING);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCSE);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_XCAP);
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCS);
                         break;
                     }
                     case PhoneConstants.APN_TYPE_DEFAULT: {
-                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        // M: [C2K][IRAT] Check sub ID for LTE DC sub
+                        if (isDataEnable && isDefaultDataSubPhone(mPhone)) {
+                            result.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+                        }
                         break;
                     }
                     case PhoneConstants.APN_TYPE_MMS: {
@@ -969,6 +1226,39 @@ public final class DataConnection extends StateMachine {
                     }
                     case PhoneConstants.APN_TYPE_IA: {
                         result.addCapability(NetworkCapabilities.NET_CAPABILITY_IA);
+                        break;
+                    }
+                    // MTK
+                    case PhoneConstants.APN_TYPE_DM: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_DM);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_WAP: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_WAP);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_NET: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_NET);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_CMMAIL: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_CMMAIL);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_TETHERING: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_TETHERING);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_RCSE: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCSE);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_XCAP: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_XCAP);
+                        break;
+                    }
+                    case PhoneConstants.APN_TYPE_RCS: {
+                        result.addCapability(NetworkCapabilities.NET_CAPABILITY_RCS);
                         break;
                     }
                     default:
@@ -1077,8 +1367,14 @@ public final class DataConnection extends StateMachine {
             if (DBG) log("DcDefaultState: enter");
 
             // Register for DRS or RAT change
-            mPhone.getServiceStateTracker().registerForDataRegStateOrRatChanged(getHandler(),
-                    DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            // MTK
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                SvlteSstProxy.getInstance().registerForDataRegStateOrRatChanged(getHandler(),
+                       DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            } else {
+                mPhone.getServiceStateTracker().registerForDataRegStateOrRatChanged(getHandler(),
+                      DataConnection.EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED, null);
+            }
 
             mPhone.getServiceStateTracker().registerForDataRoamingOn(getHandler(),
                     DataConnection.EVENT_DATA_CONNECTION_ROAM_ON, null);
@@ -1093,7 +1389,12 @@ public final class DataConnection extends StateMachine {
             if (DBG) log("DcDefaultState: exit");
 
             // Unregister for DRS or RAT change.
-            mPhone.getServiceStateTracker().unregisterForDataRegStateOrRatChanged(getHandler());
+            // MTK
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                SvlteSstProxy.getInstance().unregisterForDataRegStateOrRatChanged(getHandler());
+            } else {
+                mPhone.getServiceStateTracker().unregisterForDataRegStateOrRatChanged(getHandler());
+            }
 
             mPhone.getServiceStateTracker().unregisterForDataRoamingOn(getHandler());
             mPhone.getServiceStateTracker().unregisterForDataRoamingOff(getHandler());
@@ -1191,6 +1492,63 @@ public final class DataConnection extends StateMachine {
                     if (VDBG) log("DcDefaultState: msg.what=REQ_RESET");
                     transitionTo(mInactiveState);
                     break;
+
+                // MTK
+                //VoLTE
+                case DcAsyncChannel.REQ_GET_CONCATENATED_PROPERTIES:
+                    DedicateBearerProperties[] propertiesArray = null;
+                    int concatenatedNum = mConcatenatedBearers.size();
+                    if (concatenatedNum > 0) {
+                        propertiesArray = new DedicateBearerProperties[concatenatedNum];
+                        for (int i=0; i<concatenatedNum; i++)
+                            propertiesArray[i] = mConcatenatedBearers.get(i);
+
+                        if (VDBG) log("REQ_GET_CONCATENATED_PROPERTIES total=" + concatenatedNum);
+                    }
+                    mAc.replyToMessage(msg, DcAsyncChannel.RSP_GET_CONCATENATED_PROPERTIES, propertiesArray);
+                    break;
+                //VoLTE
+                case DcAsyncChannel.REQ_GET_PCSCF:
+                    if (VDBG) log("REQ_GET_PCSCF " + mPcscfInfo);
+                    mAc.replyToMessage(msg, DcAsyncChannel.RSP_GET_PCSCF, mPcscfInfo);
+                    break;
+
+                //VoLTE
+                case DcAsyncChannel.REQ_GET_DEFAULT_BEARER_PROPERTIES:
+                    if (VDBG) log("REQ_GET_DEFAULT_BEARER_PROPERTIES " + mDefaultBearer);
+                    mAc.replyToMessage(msg, DcAsyncChannel.RSP_GET_DEFAULT_BEARER_PROPERTIES, mDefaultBearer);
+                    break;
+
+                //VoLTE
+                case DcAsyncChannel.REQ_GET_LAST_DATA_CONN_FAIL_CAUSE:
+                    if (VDBG) log("REQ_GET_LAST_DATA_CONN_FAIL_CAUSE last fail cause is " + mLastFailCause);
+                    mAc.replyToMessage(msg, DcAsyncChannel.RSP_GET_LAST_DATA_CONN_FAIL_CAUSE, mLastFailCause);
+                    break;
+
+                //VoLTE
+                case EVENT_PCSCF_DISCOVERY_DONE:
+                    AsyncResult ar = (AsyncResult)msg.obj;
+                    Message onCompletedMsg = (Message)ar.userObj;
+                    if (onCompletedMsg != null) {
+                        AsyncResult.forMessage(onCompletedMsg, null, new Exception("Not in active state"));
+                        onCompletedMsg.sendToTarget();
+                    }
+                    break;
+
+                //VoLTE
+                case DcAsyncChannel.REQ_GET_DEFAULT_BEARER_DEACTIVATE_CID_ARRAY:
+                    if (VDBG) log("REQ_GET_DEFAULT_BEARER_DEACTIVATE_CID_ARRAY");
+                    int [] cidArray = null;
+                    int size = mDeactivateCidArray.size();
+                    if(0 < size) {
+                        cidArray = new int [size];
+                        for(int i = 0; i < size; i++) {
+                            cidArray[i] = mDeactivateCidArray.get(i);
+                        }
+                    }
+                    mAc.replyToMessage(msg, DcAsyncChannel.RSP_GET_DEFAULT_BEARER_DEACTIVATE_CID_ARRAY, cidArray);
+                    break;
+
                 case EVENT_CONNECT:
                     if (DBG) log("DcDefaultState: msg.what=EVENT_CONNECT, fail not expected");
                     ConnectionParams cp = (ConnectionParams) msg.obj;
@@ -1215,7 +1573,9 @@ public final class DataConnection extends StateMachine {
 
                 case EVENT_TEAR_DOWN_NOW:
                     if (DBG) log("DcDefaultState EVENT_TEAR_DOWN_NOW");
-                    mPhone.mCi.deactivateDataCall(mCid, 0,  null);
+                    // MTK
+                    /// M: [C2K][IRAT] Use RilArbitrator to deactivate data.
+                    deactivateDataCall(mCid, 0, null);
                     break;
 
                 case EVENT_LOST_CONNECTION:
@@ -1235,7 +1595,7 @@ public final class DataConnection extends StateMachine {
                     break;
 
                 case EVENT_DATA_CONNECTION_DRS_OR_RAT_CHANGED:
-                    AsyncResult ar = (AsyncResult)msg.obj;
+                    ar = (AsyncResult)msg.obj;
                     Pair<Integer, Integer> drsRatPair = (Pair<Integer, Integer>)ar.result;
                     mDataRegState = drsRatPair.first;
                     if (mRilRat != drsRatPair.second) {
@@ -1248,6 +1608,17 @@ public final class DataConnection extends StateMachine {
                                 + " mRilRat=" + mRilRat);
                     }
                     ServiceState ss = mPhone.getServiceState();
+                    // M: [C2K][IRAT] Get network type from IRAT controller
+                    // TODO: check if the message is handled before
+                    // IratController update its current RAT.
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                      //can get networkType from svltePhoneProxy to get right network type
+                        ServiceState svlteSs = SvlteUtils.getSvltePhoneProxy(mPhone.getPhoneId())
+                                .getSvlteServiceState();
+                        if (svlteSs != null) {
+                            ss = svlteSs;
+                        }
+                    }
                     int networkType = ss.getDataNetworkType();
                     mNetworkInfo.setSubtype(networkType,
                             TelephonyManager.getNetworkTypeName(networkType));
@@ -1264,6 +1635,62 @@ public final class DataConnection extends StateMachine {
 
                 case EVENT_DATA_CONNECTION_ROAM_OFF:
                     mNetworkInfo.setRoaming(false);
+                    break;
+
+                // MTK
+                case EVENT_IPV4_ADDRESS_REMOVED:
+                    if (DBG) {
+                        log("DcDefaultState: ignore EVENT_IPV4_ADDRESS_REMOVED not in ActiveState");
+                    }
+                    break;
+
+                case EVENT_IPV6_ADDRESS_REMOVED:
+                    if (DBG) {
+                        log("DcDefaultState: ignore EVENT_IPV6_ADDRESS_REMOVED not in ActiveState");
+                    }
+                    break;
+
+                 case EVENT_IPV4_ADDRESS_UPDATED:
+                    if (DBG) {
+                        log("DcDefaultState: ignore EVENT_IPV4_ADDRESS_UPDATED not in ActiveState");
+                    }
+                    break;
+
+                case EVENT_IPV6_ADDRESS_UPDATED:
+                    if (DBG) {
+                        log("DcDefaultState: ignore EVENT_IPV6_ADDRESS_UPDATED not in ActiveState");
+                    }
+                    break;
+
+                case EVENT_ADDRESS_REMOVED:
+                    if (DBG) {
+                        log("DcDefaultState: " + getWhatToString(msg.what));
+                    }
+                    // TODO: need to do something
+                    break;
+
+                case EVENT_ADDRESS_UPDATED:
+                    if (DBG) {
+                        log("DcDefaultState: " + getWhatToString(msg.what));
+                    }
+                    // TODO: need to do something
+                    notifyAddress((AddressInfo) msg.obj);
+                    break;
+
+                case EVENT_ADDRESS_DHCP_NEEDED:
+                    if (DBG) {
+                        log("DcDefaultState: " + getWhatToString(msg.what));
+                    }
+                    // TODO: need to do something
+                    notifyUseDhcpAddress((AddressInfo) msg.obj);
+                    break;
+
+                case EVENT_UPDATE_PHONE:
+                    if (DBG) {
+                        log("DcDefaultState: EVENT_UPDATE_PHONE");
+                    }
+                    onUpdatePhone((PhoneBase) msg.obj);
+                    transitionTo(mInactiveState);
                     break;
 
                 default:
@@ -1333,8 +1760,34 @@ public final class DataConnection extends StateMachine {
                 notifyAllDisconnectCompleted(mDcFailCause);
             }
 
+            // MTK VoLTE
+            // For notified failed cause to DataDispatcher 
+            for (ApnContext ApnContext: mApnContexts) {
+                String apnType = ApnContext.getApnType();
+                if (isApnTypeIMSorEmergency(apnType)) {
+                    notifyIMSFailedCause(apnType);
+                }
+            }
+
+            // M: [epdg] remove mNetworkAgent
+            if (mNetworkAgent != null) {
+                //Clear Link Property firstly
+                mLinkProperties.clear();
+                mNetworkAgent.sendLinkProperties(mLinkProperties);
+                mNetworkInfo.setDetailedState(NetworkInfo.DetailedState.DISCONNECTED,
+                        mNetworkInfo.getReason(), mNetworkInfo.getExtraInfo());
+                mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+                mNetworkAgent = null;
+            }
+
             // Remove ourselves from cid mapping, before clearSettings
             mDcController.removeActiveDcByCid(DataConnection.this);
+
+            // MTK VoLTE
+            for (DedicateDataConnection ddc : mDedicateDataConnections.values()) {
+                if (DBG) log("DcInactiveState: enter disconnect concatenated bearer [ddcId=" + ddc.getId()+"]");
+                ddc.disconnect(null);
+            }
 
             clearSettings();
         }
@@ -1358,6 +1811,16 @@ public final class DataConnection extends StateMachine {
                 case EVENT_CONNECT:
                     if (DBG) log("DcInactiveState: mag.what=EVENT_CONNECT");
                     ConnectionParams cp = (ConnectionParams) msg.obj;
+
+                    /** M: the connect request could be executed only if this is active data sub */
+                    if (!DctController.getInstance().isActivePhone(mPhone.getPhoneId())) {
+                        log("DcInactiveState: msg.what=EVENT_CONNECT but is not active data sub");
+                        notifyConnectCompleted(cp, DcFailCause.UNACCEPTABLE_NETWORK_PARAMETER,
+                                false);
+                        retVal = HANDLED;
+                        break;
+                    }
+
                     if (initConnection(cp)) {
                         onConnect(mConnectionParams);
                         transitionTo(mActivatingState);
@@ -1469,6 +1932,17 @@ public final class DataConnection extends StateMachine {
                         mRilRat = rat;
                         // TODO - pass the other type here too?
                         ServiceState ss = mPhone.getServiceState();
+
+                        // M: [C2K][IRAT] Get network type from IRAT controller
+                        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                            //can get networkType from svltePhoneProxy to get right network type
+                            ServiceState svlteSs = SvlteUtils.getSvltePhoneProxy(mPhone.getPhoneId())
+                                    .getSvlteServiceState();
+                            if (svlteSs != null) {
+                                ss = svlteSs;
+                            }
+                        }
+
                         int networkType = ss.getDataNetworkType();
                         mNetworkInfo.setSubtype(networkType,
                                 TelephonyManager.getNetworkTypeName(networkType));
@@ -1512,6 +1986,14 @@ public final class DataConnection extends StateMachine {
                                 + " RefCount=" + mApnContexts.size() + " cp=" + cp
                                 + " mConnectionParams=" + mConnectionParams);
                     }
+
+                    /** M: the connect request could be executed only if this is active data sub */
+                    if (!DctController.getInstance().isActivePhone(mPhone.getPhoneId())) {
+                        log("DcRetryingState: msg.what=EVENT_CONNECT but is not active data sub");
+                        retVal = HANDLED;
+                        break;
+                    }
+
                     if (initConnection(cp)) {
                         onConnect(mConnectionParams);
                         transitionTo(mActivatingState);
@@ -1569,6 +2051,66 @@ public final class DataConnection extends StateMachine {
      * The state machine is activating a connection.
      */
     private class DcActivatingState extends State {
+        // MTK
+        @Override
+        public void enter() {
+            if (DBG) {
+                log("DcActivatingState: enter dc=" + DataConnection.this);
+            }
+
+            // M: IPv6 RA update
+            // setIpChangedReceivedOrNot(true);
+
+            // L MR1
+            if (mNetworkAgent == null) {
+                // M: [epdg] new DcNetworkAgent on this state
+                mNetworkInfo.setDetailedState(NetworkInfo.DetailedState.CONNECTING,
+                        mNetworkInfo.getReason(), null);
+                mNetworkInfo.setExtraInfo(mApnSetting.apn);
+
+                // VoLTE
+                int nNetworkType = ConnectivityManager.TYPE_NONE;
+                for (String apnType: mApnSetting.types) {
+                    if (TextUtils.equals(apnType, PhoneConstants.APN_TYPE_IMS)) {
+                        nNetworkType = ConnectivityManager.TYPE_MOBILE_IMS;
+                        break;
+                    } else if (TextUtils.equals(apnType, PhoneConstants.APN_TYPE_EMERGENCY)) {
+                        nNetworkType = ConnectivityManager.TYPE_MOBILE_EMERGENCY;
+                        break;
+                    }
+                }
+
+                switch (nNetworkType) {
+                    case ConnectivityManager.TYPE_MOBILE_IMS:
+                    case ConnectivityManager.TYPE_MOBILE_EMERGENCY:
+                        mNetworkInfo.setType(nNetworkType);
+                        mNetworkInfo.setTypeName(ConnectivityManager.getNetworkTypeName(
+                                nNetworkType));
+                        log("NetworkInfo for ims/emergency: " + mNetworkInfo);
+                        break;
+                    default:
+                        mNetworkInfo.setType(ConnectivityManager.TYPE_MOBILE);
+                        mNetworkInfo.setTypeName(ConnectivityManager.getNetworkTypeName(
+                                                ConnectivityManager.TYPE_MOBILE));
+                }
+
+                final NetworkMisc misc = new NetworkMisc();
+                misc.subscriberId = mPhone.getSubscriberId();
+                mNetworkAgent = new DcNetworkAgent(getHandler().getLooper(), mPhone.getContext(),
+                        "DcNetworkAgent", mNetworkInfo, makeNetworkCapabilities(), mLinkProperties,
+                        50, misc);
+                log("DcActivatingState: new NetworkAgent");
+            } else {
+                // M: Don't create a new one to avoid FD leak.
+                log("DcActivatingState: NetworkAgent has existed");
+            }
+        }
+
+        @Override
+        public void exit() {
+            if (DBG) log("DcActivatingState: exit dc=" + this);
+        }
+
         @Override
         public boolean processMessage(Message msg) {
             boolean retVal;
@@ -1727,6 +2269,16 @@ public final class DataConnection extends StateMachine {
                     retVal = HANDLED;
                     break;
 
+                // MTK
+                case EVENT_IPV4_ADDRESS_REMOVED:
+                case EVENT_IPV6_ADDRESS_REMOVED:
+                case EVENT_IPV4_ADDRESS_UPDATED:
+                case EVENT_IPV6_ADDRESS_UPDATED:
+                    log("DcActivatingState deferMsg: " + getWhatToString(msg.what) + ", address info: " + (AddressInfo) msg.obj);
+                    deferMessage(msg);
+                    retVal = HANDLED;
+                    break;
+
                 default:
                     if (VDBG) {
                         log("DcActivatingState not handled msg.what=" +
@@ -1763,17 +2315,32 @@ public final class DataConnection extends StateMachine {
                     mNetworkInfo.getReason(), null);
             mNetworkInfo.setExtraInfo(mApnSetting.apn);
             updateTcpBufferSizes(mRilRat);
+            // MTK: NetworkAgent creation moved to DcActivatingState
+            if (mNetworkAgent != null) {
+                mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+                mNetworkAgent.sendLinkProperties(mLinkProperties);
+            }
+
+            /*
             final NetworkMisc misc = new NetworkMisc();
             misc.subscriberId = mPhone.getSubscriberId();
             mNetworkAgent = new DcNetworkAgent(getHandler().getLooper(),
                     mPhone.getContext(),
                     "DcNetworkAgent" + mPhone.getSubId(), mNetworkInfo,
                     makeNetworkCapabilities(), mLinkProperties, 50, misc);
+            */
         }
 
         @Override
         public void exit() {
             if (DBG) log("DcActiveState: exit dc=" + this);
+
+            ///Modify for ePDG {@
+            //Clear Link Property firstly
+            mLinkProperties.clear();
+            mNetworkAgent.sendLinkProperties(mLinkProperties);
+            ///@}
+
             mNetworkInfo.setDetailedState(NetworkInfo.DetailedState.DISCONNECTED,
                     mNetworkInfo.getReason(), mNetworkInfo.getExtraInfo());
             mNetworkAgent.sendNetworkInfo(mNetworkInfo);
@@ -1824,6 +2391,14 @@ public final class DataConnection extends StateMachine {
                             transitionTo(mDisconnectingState);
                         } else {
                             mApnContexts.remove(dp.mApnContext);
+
+                            // M : notify Capability if default removed, need remove "internet"
+                            if (mNetworkAgent != null) {
+                                NetworkCapabilities cap = makeNetworkCapabilities();
+                                mNetworkAgent.sendNetworkCapabilities(cap);
+                                log("DcActiveState update Capabilities:" + cap);
+                            }
+
                             notifyDisconnectCompleted(dp, false);
                         }
                     } else {
@@ -1852,7 +2427,26 @@ public final class DataConnection extends StateMachine {
                     if (DBG) {
                         log("DcActiveState EVENT_LOST_CONNECTION dc=" + DataConnection.this);
                     }
-                    if (mRetryManager.isRetryNeeded()) {
+
+                    // MTK VoLTE
+                    boolean bIMSSkipRetry = false;
+                    if (mApnSetting != null) {
+                        for (String apnType: mApnSetting.types) {
+                            if (isApnTypeIMSorEmergency(apnType)) {
+                                log("apn type: " + apnType + ", no doing retry!!, cid: " + mDefaultBearer.defaultCid);
+                                bIMSSkipRetry = true;
+                                clearCidArray();
+                                // add lost connection cid to deactivateCidArray for dataDispatcher checked
+                                if (mDefaultBearer.defaultCid != -1) {
+                                    setCidArray(mDefaultBearer.defaultCid);
+                                }
+                                notifyIMSDeactivatedCids(apnType);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (mRetryManager.isRetryNeeded() && !bIMSSkipRetry) {
                         // We're going to retry
                         int delayMillis = mRetryManager.getRetryTimer();
                         if (DBG) {
@@ -1881,6 +2475,25 @@ public final class DataConnection extends StateMachine {
                     retVal = HANDLED;
                     break;
                 }
+                // MTK
+                //VoLTE
+                case EVENT_PCSCF_DISCOVERY_DONE:
+                    AsyncResult ar = (AsyncResult)msg.obj;
+                    if (ar.exception == null) {
+                        mPcscfInfo = (PcscfInfo)ar.result;
+                        log("DcActiveState: msg.what=EVENT_PCSCF_DISCOVERY_DONE mPcscfInfo=" + mPcscfInfo);
+                    } else {
+                        log("DcActiveState: Unexpected exception on EVENT_PCSCF_DISCOVERY_DONE [" + ar.exception + "]");
+                        mPcscfInfo = null;
+                    }
+                    Message onCompletedMsg = (Message)ar.userObj;
+                    if (onCompletedMsg != null) {
+                        AsyncResult.forMessage(onCompletedMsg, mPcscfInfo, ar.exception);
+                        onCompletedMsg.sendToTarget();
+                    }
+                    retVal = HANDLED;
+                    break;
+                // MTK IPv6 RA handling not ported
                 default:
                     if (VDBG) {
                         log("DcActiveState not handled msg.what=" + getWhatToString(msg.what));
@@ -1917,6 +2530,22 @@ public final class DataConnection extends StateMachine {
                     if (dp.mTag == mTag) {
                         // Transition to inactive but send notifications after
                         // we've entered the mInactive state.
+
+                        // MTK
+                        //VoLTE
+                        int cidArrayLen = 0;
+                        if(ar.result instanceof int []) {
+                            int [] cidArray = (int [])ar.result;
+                            log("cidArray size: " + cidArray.length);
+                            if (cidArray.length > 0) {
+                                cidArrayLen = cidArray.length;
+                                setCidArray(cidArray);
+                            } 
+                        }else {
+                            // ex: something wrong at deactivate error: response null
+                            if (DBG) log ("RIL response null due to error");
+                        }
+
                         mInactiveState.setEnterNotificationParams((DisconnectParams) ar.userObj);
                         transitionTo(mInactiveState);
                     } else {
@@ -1998,14 +2627,31 @@ public final class DataConnection extends StateMachine {
                         ", which isn't me.  Aborting unwanted");
                 return;
             }
+            if (DBG) log("DcNetworkAgent unwanted!");
             // this can only happen if our exit has been called - we're already disconnected
             if (mApnContexts == null) return;
             for (ApnContext apnContext : mApnContexts) {
+                log("DcNetworkAgent: [unwanted]: disconnect apnContext=" + apnContext);
                 Message msg = mDct.obtainMessage(DctConstants.EVENT_DISCONNECT_DONE, apnContext);
                 DisconnectParams dp = new DisconnectParams(apnContext, apnContext.getReason(), msg);
                 DataConnection.this.sendMessage(DataConnection.this.
                         obtainMessage(EVENT_DISCONNECT, dp));
             }
+        }
+    }
+
+    // M: ipv6
+    private class AddressInfo {
+        String mIntfName;
+        LinkAddress mLinkAddr;
+
+        public AddressInfo(String intfName, LinkAddress linkAddr) {
+            mIntfName = intfName;
+            mLinkAddr = linkAddr;
+        }
+
+        public String toString() {
+            return "interfaceName: "  + mIntfName + "/" + mLinkAddr;
         }
     }
 
@@ -2200,5 +2846,498 @@ public final class DataConnection extends StateMachine {
         pw.println(" mAc=" + mAc);
         pw.println(" mDcRetryAlarmController=" + mDcRetryAlarmController);
         pw.flush();
+    }
+
+    // MTK
+
+    //VoLTE
+    protected PcscfInfo mPcscfInfo;
+    protected HashMap<Integer, DedicateDataConnection> mDedicateDataConnections = new HashMap<Integer, DedicateDataConnection>();
+    protected ArrayList<DedicateBearerProperties> mConcatenatedBearers = new ArrayList<DedicateBearerProperties>();
+    protected DedicateBearerProperties mDefaultBearer = new DedicateBearerProperties();
+    protected ArrayList<Integer> mDeactivateCidArray = new ArrayList <Integer> ();
+
+    //Using EVENT_IPV4_ADDRESS_UPDATED, EVENT_IPV6_ADDRESS_UPDATED as key for this SparseBooleanArray
+    protected SparseBooleanArray mIpv4V6UpdatedStatus = new SparseBooleanArray(2);
+    protected boolean mIsReadyToRecieveIPChanged = false;
+
+    public void enableDedicateBearer(DcTracker.EnableDedicateBearerParam param, Message onCompletedMsg) {
+        mDedicateDataConnections.put(param.ddc.getId(), param.ddc);
+        param.ddc.bringUp(param, onCompletedMsg);
+    }
+
+    public void disableDedicateBearer(String reason, int ddcId, Message onCompletedMsg) {
+        try {
+            DedicateDataConnection ddc = mDedicateDataConnections.get(ddcId);
+            ddc.tearDown(reason, onCompletedMsg);
+        } catch (NullPointerException e) {
+            loge("disableDedicateBearer get null ddc with id: " + ddcId);
+        }
+    }
+
+    public void disconnectDedicateBearer(int ddcId, Message onCompletedMsg) {
+        //use this method to switch dedicate bearer to idle state (no AT would be sent) and notification would be sent when completed
+        try {
+            DedicateDataConnection ddc = mDedicateDataConnections.get(ddcId);
+            ddc.disconnect(onCompletedMsg);
+        } catch (NullPointerException e) {
+            loge("disconnectDedicateBearer get null ddc with id: " + ddcId);
+        }
+    }
+    public void updateDedicateBearer(DedicateDataConnection ddc, DedicateDataCallState dedicateDataCallState, Message onCompletedMsg) {
+        mDedicateDataConnections.put(ddc.getId(), ddc);
+        ddc.update(dedicateDataCallState, onCompletedMsg);
+    }
+
+    public void pcscfDiscovery(int cid, Message onCompleteMsg) {
+        mPhone.mCi.pcscfDiscoveryPco(cid, obtainMessage(EVENT_PCSCF_DISCOVERY_DONE, onCompleteMsg));
+    }
+
+    void setCidArray(int cid) {
+         int [] cidArray = new int [1];
+         cidArray[0] = cid;
+         setCidArray(cidArray);
+    }
+
+    void setCidArray(int [] cidArray) {
+        clearCidArray();
+        StringBuilder msg = new StringBuilder();
+        msg.append("set deactivateCidArray ");
+        if (null != cidArray) {
+            int length = cidArray.length;
+            msg.append("amount: " + length + ", cid(s): ");
+            for(int i = 0; i < length; i++) {
+                mDeactivateCidArray.add(cidArray[i]);
+                msg.append(cidArray[i] + ", ");
+            }
+        } else {
+            msg.append("amount: " + mDeactivateCidArray.size());
+        }
+        if (DBG) log(msg.toString());
+    }
+
+    void clearCidArray() {
+        if (DBG) log ("clear deactivate cid array");
+        mDeactivateCidArray.clear();
+    }
+
+    /**
+     * Send notify of ims deactivated cid(s) array to register (ex: dataDispatcher)
+     *
+     */
+    private void notifyIMSDeactivatedCids(String apnType) {
+        if (DBG) log("notifyIMSDeactivatedCids, apnType: " + apnType);
+        Intent intent = new Intent(TelephonyIntents.ACTION_NOTIFY_IMS_DEACTIVATED_CIDS);
+
+        int [] cidArray = null;
+        int size = mDeactivateCidArray.size();
+        if(0 < size) {
+            log("deactvated cid(s): " + mDeactivateCidArray);
+            cidArray = new int [size];
+            for(int i = 0; i < size; i++) {
+                cidArray[i] = mDeactivateCidArray.get(i);
+            }
+        }
+
+        intent.putExtra(PhoneConstants.DATA_APN_TYPE_KEY, apnType);
+        intent.putExtra(TelephonyIntents.EXTRA_IMS_DEACTIVATED_CIDS, cidArray);
+        mPhone.getContext().sendBroadcast(intent);
+    }
+
+    /**
+     * Send notify of ims/emis failed cause number to register (ex: dataDispatcher)
+     *
+     */
+    private void notifyIMSFailedCause(String apnType) {
+        Intent intent = new Intent(TelephonyIntents.ACTION_NOTIFY_IMS_PDN_FAILED_CAUSE);
+        int nFailedCause = DcFailCause.NONE.getErrorCode();
+
+        if (mDcFailCause != null) {
+            nFailedCause = mDcFailCause.getErrorCode();
+        }
+
+        intent.putExtra(PhoneConstants.DATA_APN_TYPE_KEY, apnType);
+        intent.putExtra(TelephonyIntents.EXTRA_IMS_PDN_FAILED_CAUSE, nFailedCause);
+        mPhone.getContext().sendBroadcast(intent);
+
+        if (DBG) log("notifyIMSFailedCause, apnType: " + apnType +
+            " failed cause: " + nFailedCause);
+    }
+
+    /**
+     * Send notify of IMS default pdn modification to register (ex: dataDispatcher)
+     *
+     */
+    void notifyIMSDefaultPdnModification() {
+        if (DBG) log("notifyIMSDefaultPdnModification");
+        Intent intent = new Intent(TelephonyIntents.ACTION_NOTIFY_IMS_DEFAULT_PDN_MODIFICATION);
+        int phoneId = SubscriptionManager.getPhoneId(mPhone.getSubId());
+
+        intent.putExtra(TelephonyIntents.EXTRA_IMS_DEFAULT_RESPONSE_DATA_CALL, mDefaultBearer);
+        intent.putExtra(PhoneConstants.PHONE_KEY, phoneId);
+        mPhone.getContext().sendBroadcast(intent);
+    }
+
+    boolean isApnTypeIMSorEmergency(String apnType) {
+        return (TextUtils.equals(apnType, PhoneConstants.APN_TYPE_IMS) ||
+           TextUtils.equals(apnType, PhoneConstants.APN_TYPE_EMERGENCY));
+    }
+
+    /**
+     * checkSmRetry.
+     * prevent JE happened
+     */
+    private boolean checkSmRetry(DcFailCause cause) {
+        /*
+        boolean need = false;
+
+        if (!mIsBsp) {
+            try {
+                need = mGsmDCTExt.needSmRetry(cause);
+            } catch (Exception e) {
+                loge("checkSmRetry fail!");
+                e.printStackTrace();
+            }
+        }
+        return need;
+        */
+        return false;
+    }
+    /**
+     *  M: IPv6 RA updateObserver that watches for {@link INetworkManagementService} alerts.
+     */
+    private int getEventByAddress(boolean bUpdated, LinkAddress linkAddr) {
+            int event = -1;
+            InetAddress addr = linkAddr.getAddress();
+            if (addr instanceof Inet6Address) {
+                event = bUpdated ? EVENT_IPV6_ADDRESS_UPDATED:
+                                            EVENT_IPV6_ADDRESS_REMOVED;
+            } else if (addr instanceof Inet4Address) {
+                event = bUpdated ? EVENT_IPV4_ADDRESS_UPDATED:
+                                            EVENT_IPV4_ADDRESS_REMOVED;
+            } else {
+                loge("unknown address type, linkAddr: " + linkAddr);
+            }
+
+            return event;
+    }
+
+    private void sendMessageForSM(int event, String iface, LinkAddress address) {
+        if (event < 0) {
+            loge("sendMessageForSM: Skip notify!!!");
+            return;
+        }
+        AddressInfo addrInfo = new AddressInfo(iface, address);
+        log("sendMessageForSM: " + cmdToString(event) + ", addressInfo: " + addrInfo);
+        sendMessage(obtainMessage(event, addrInfo));
+    }
+
+    /*
+    private INetworkManagementEventObserver mAlertObserver = new BaseNetworkObserver() {
+        @Override
+        public void addressRemoved(String iface, LinkAddress address) {
+            log("addressRemoved, mIsReadyToRecieveIPChanged: " + mIsReadyToRecieveIPChanged);
+            if (mIsReadyToRecieveIPChanged) {
+                int event = getEventByAddress(false, address);
+
+                sendMessageForSM(event, iface, address);
+            }
+        }
+
+        // TODO: need to add address update for IPV6 volte
+        @Override
+        public void addressUpdated(String iface, LinkAddress address) {
+            log("addressUpdated, mIsReadyToRecieveIPChanged: " + mIsReadyToRecieveIPChanged);
+            if (mIsReadyToRecieveIPChanged) {
+                int event = getEventByAddress(true, address);
+
+                if (false == mIpv4V6UpdatedStatus.get(event)) {
+                     sendMessageForSM(event, iface, address);
+                } else {
+                    log("event: " + event + " has been already updated to registers!!");
+                }
+            }
+        }
+    };
+    */
+
+    private void onAddressRemoved(){
+        if ((RILConstants.SETUP_DATA_PROTOCOL_IPV6.equals(mApnSetting.protocol)
+            || RILConstants.SETUP_DATA_PROTOCOL_IPV4V6.equals(mApnSetting.protocol)) &&
+            !isIpv4Connected()) {
+            log("onAddressRemoved: EVENT_DISCONNECT_ALL");
+            log("IPv6 RA failed and didn't connect with IPv4");
+            if (mApnContexts != null) {
+                log("onAddressRemoved: mApnContexts size: " + mApnContexts.size());
+                for (ApnContext apnContext : mApnContexts) {
+                    String apnType = apnContext.getApnType();
+                    if (apnContext.getState() == DctConstants.State.CONNECTED) {
+                        if (isApnTypeIMSorEmergency(apnType)) {
+                            // TODO: skip ims and emergency pdn if RA address removed
+                            // TODO: might need to check if OP12 specs satisfied or not
+                            log("apnType: " + apnType + ", skip disconnect while onAddressRemoved!!");
+                        } else {
+                            Message msg =
+                                mDct.obtainMessage(DctConstants.EVENT_DISCONNECT_DONE, apnContext);
+                            DisconnectParams dp =
+                                new DisconnectParams(apnContext, Phone.REASON_RA_FAILED, msg);
+                            DataConnection.this.sendMessage(DataConnection.this.
+                                    obtainMessage(EVENT_DISCONNECT_ALL, dp));
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            log("onAddressRemoved: no need to remove");
+        }
+    }
+
+    private boolean isTestSim(){
+        try {
+            ITelephonyEx iTelEx = ITelephonyEx.Stub.asInterface(
+                    ServiceManager.getService(Context.TELEPHONY_SERVICE_EX));
+
+            if (null == iTelEx) {
+                loge("iTelEx is null");
+                return false;
+            }
+
+            int slotId = SubscriptionManager.getSlotId(mPhone.getSubId());
+            if (SubscriptionManager.isValidSlotId(slotId) && iTelEx.isTestIccCard(slotId)) {
+                loge("isTestSim");
+                return true;
+            }
+        } catch (Exception ex) {
+            loge("dataConnection test SIM detection fail");
+            ex.printStackTrace();
+        }
+
+        return false;
+    }
+
+    /// M: [C2K][IRAT] start @{
+    void updatePhone(PhoneBase phone) {
+        // TODO: check whether need to improve for lte--> hrpd.
+        onUpdatePhone(phone);
+    }
+
+    void onUpdatePhone(PhoneBase phone) {
+        logd("[IRAT_DC] onUpdatePhone: mPhone = " + mPhone + ", phone = " + phone);
+        // Unregister roaming events.
+        mPhone.getServiceStateTracker().unregisterForDataRoamingOn(getHandler());
+        mPhone.getServiceStateTracker().unregisterForDataRoamingOff(getHandler());
+
+        //updatePhone
+        mPhone = phone;
+
+        // Register roaming events.
+
+        mPhone.getServiceStateTracker().registerForDataRoamingOn(getHandler(),
+                DataConnection.EVENT_DATA_CONNECTION_ROAM_ON, null);
+        mPhone.getServiceStateTracker().registerForDataRoamingOff(getHandler(),
+                DataConnection.EVENT_DATA_CONNECTION_ROAM_OFF, null);
+    }
+
+    private void setupDataCall(String radioTechnology, String profile,
+            String apn, String user, String password, String authType,
+            String protocol, String interfaceId, Message result) {
+        if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport() || !SvlteUtils.isActiveSvlteMode(mPhone)) {
+            mPhone.mCi.setupDataCall(radioTechnology, profile, apn, user,
+                    password, authType, protocol, interfaceId, result);
+        } else {
+            getRilDcArbitrator().setupDataCall(radioTechnology, profile, apn,
+                    user, password, authType, protocol, interfaceId, result);
+        }
+    }
+
+    private void deactivateDataCall(int cid, int reason, Message result) {
+        if (!CdmaFeatureOptionUtils.isCdmaLteDcSupport() || !SvlteUtils.isActiveSvlteMode(mPhone)) {
+            mPhone.mCi.deactivateDataCall(cid, reason, result);
+        } else {
+            getRilDcArbitrator().deactivateDataCall(cid, reason, result);
+        }
+    }
+
+    private IRilDcArbitrator getRilDcArbitrator() {
+        return ((SvltePhoneProxy) PhoneFactory.getPhone(SvlteModeController
+                .getActiveSvlteModeSlotId())).getRilDcArbitrator();
+    }
+
+    private boolean isDefaultDataSubPhone(Phone phone) {
+        final int defaultDataPhoneId = mSubController.getPhoneId(
+                mSubController.getDefaultDataSubId());
+        int curPhoneId = phone.getPhoneId();
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            curPhoneId = SvlteUtils.getSvltePhoneIdByPhoneId(curPhoneId);
+        }
+
+        if (defaultDataPhoneId != curPhoneId) {
+            log("Current phone is not default phone: curPhoneId = "
+                    + curPhoneId + ", defaultDataPhoneId = "
+                    + defaultDataPhoneId);
+            return false;
+        }
+        return true;
+    }
+    /// M: [C2K][IRAT] end }@
+
+    // M: IPV6
+    private String getIMSorEIMSorFirstApnType() {
+        String apnType = "";
+        if (mApnSetting != null) {
+            for (String type: mApnSetting.types) {
+                if (isApnTypeIMSorEmergency(type)) {
+                    apnType = type;
+                    break;
+                }
+            }
+            if (TextUtils.equals(apnType, "") && mApnSetting.types.length > 0) {
+                apnType = mApnSetting.types[0]; //if not ims or Emergency, use first apnType
+            }
+        }
+        return apnType;
+    }
+
+    private void notifyUseDhcpAddress(AddressInfo addrInfo) {
+        int phoneId = SubscriptionManager.getPhoneId(mPhone.getSubId());
+        String apnType = getIMSorEIMSorFirstApnType();
+
+        log("notifyUseDhcpAddress, apn type: " + apnType);
+        Intent intent = new Intent(TelephonyIntents.ACTION_NOTIFY_USE_DHCP_IP_ADDR);
+
+        intent.putExtra(TelephonyIntents.EXTRA_GLOBAL_IP_ADDR_KEY, addrInfo.mLinkAddr.getAddress());
+        intent.putExtra(PhoneConstants.DATA_APN_TYPE_KEY, apnType);
+        intent.putExtra(PhoneConstants.DATA_IFACE_NAME_KEY, addrInfo.mIntfName);
+        intent.putExtra(PhoneConstants.PHONE_KEY, phoneId);
+
+        mPhone.getContext().sendBroadcast(intent);
+    }
+
+    private void notifyAddress(AddressInfo addrInfo) {
+        int phoneId = SubscriptionManager.getPhoneId(mPhone.getSubId());
+        String apnType = getIMSorEIMSorFirstApnType();
+
+        log("notifyAddress, apn type: " + apnType);
+        Intent intent = new Intent(TelephonyIntents.ACTION_NOTIFY_GLOBAL_IP_ADDR);
+        intent.putExtra(TelephonyIntents.EXTRA_GLOBAL_IP_ADDR_KEY, addrInfo.mLinkAddr.getAddress());
+        intent.putExtra(PhoneConstants.DATA_APN_TYPE_KEY, apnType);
+        intent.putExtra(PhoneConstants.DATA_IFACE_NAME_KEY, addrInfo.mIntfName);
+        intent.putExtra(PhoneConstants.PHONE_KEY, phoneId);
+
+        mPhone.getContext().sendBroadcast(intent);
+    }
+
+    private void onAddressUpdated(boolean bIsV6, AddressInfo addrInfo) {
+        log("onAddressUpdated bIsV6: " + bIsV6 + ", addressInfo: " + addrInfo + " X");
+        String iface = addrInfo.mIntfName;
+        LinkAddress address = addrInfo.mLinkAddr;
+
+        if (bIsV6) { //IPV6
+            try {
+                if (iface.equals(mInterfaceName)) {
+                    int raFlag = NetworkUtils.getRaFlags(iface);
+                    log("onAddressUpdated, raFlag: " + raFlag);
+                    switch(raFlag) {
+                    case 1:
+                    case 4:
+                        if (RT_SCOPE_UNIVERSE == address.getScope()) {
+                            log("onAddressUpdated, scope is RT_SCOPE_UNIVERSE !!###");
+                            int flag = address.getFlags();
+                            log("onAddressUpdated, flag: " + flag);
+                            if ((flag & 1) != IFA_F_TEMPORARY) {
+                                // TODO: notify ipv6 address
+                                log("onAddressUpdated, notify ipv6 address!!");
+                                mIpv4V6UpdatedStatus.put(EVENT_IPV6_ADDRESS_UPDATED, true);
+                                sendMessageDelayed(obtainMessage(EVENT_ADDRESS_UPDATED, addrInfo), 1000);
+                            } else {
+                              log("onAddressUpdated, no notify ipv6 address!!");
+                            }
+                        }
+                        break;
+                    case 2:
+                        // TODO: notify do DHCP
+                        mIpv4V6UpdatedStatus.put(EVENT_IPV6_ADDRESS_UPDATED, true);
+                        sendMessageDelayed(obtainMessage(EVENT_ADDRESS_DHCP_NEEDED, addrInfo), 1000);
+                        break;
+                    default:
+                        log("onAddressUpdated, keep waiting for raFlag to valid");
+                    }
+                } else {
+                  loge("onAddressUpdated, mInterfaceName: " + mInterfaceName + " not equals!!");
+                }
+            } catch (NullPointerException ex) {
+              loge("onAddressUpdated, iface(null), something wrong do nothing!!");
+            }
+        } else { //IPV4
+            try {
+                if (iface.equals(mInterfaceName)) {
+                    int event;
+                    if (addrInfo.mLinkAddr.getAddress().isAnyLocalAddress() == true) {
+                        // TODO: notify do DHCP
+                        event = EVENT_ADDRESS_DHCP_NEEDED;
+                    } else {
+                        // TODO: notify ipv4 address
+                        event = EVENT_ADDRESS_UPDATED;
+                    }
+                    mIpv4V6UpdatedStatus.put(EVENT_IPV4_ADDRESS_UPDATED, true);
+                    sendMessageDelayed(obtainMessage(event, addrInfo), 1000);
+                } else {
+                    loge("onAddressUpdated, mInterfaceName: " + mInterfaceName + " not equals!!");
+                }
+            } catch (NullPointerException ex) {
+                loge("onAddressUpdated, iface(null), something wrong do nothing!!");
+            }
+        }
+        log("onAddressUpdated bIsV6: " + bIsV6 + " E");
+    }
+
+    private boolean isUniqueLocal(InetAddress address) {
+        byte[] bytes = address.getAddress();
+        boolean bRet = ((bytes[0] == (byte)0xfc) || (bytes[0] == (byte)0xfd));
+        log("isUniqueLocal: " + bRet + "byte[0]:" + bytes[0]);
+        return bRet;
+    }
+
+    private void resetIpv4v6UpdatedStatus() {
+        mIpv4V6UpdatedStatus.put(EVENT_IPV4_ADDRESS_UPDATED, false);
+        mIpv4V6UpdatedStatus.put(EVENT_IPV6_ADDRESS_UPDATED, false);
+    }
+
+    private void regiseterNetworkAlertObserver() {
+        /*
+        if (mNetworkManager != null){
+            log("regiseterNetworkAlertObserver X");
+            resetIpv4v6UpdatedStatus();
+            try {
+                mNetworkManager.registerObserver(mAlertObserver);
+                log("regiseterNetworkAlertObserver E");
+            } catch (Exception e) {
+                // ignored; service lives in system_server
+                loge("regiseterNetworkAlertObserver failed E");
+            }
+        }
+        */
+    }
+    private void unRegisterNetworkAlertObserver() {
+        /*
+        if (mNetworkManager != null){
+            log("unRegiseterNetworkAlertObserver X");
+            resetIpv4v6UpdatedStatus();
+            try {
+                mNetworkManager.unregisterObserver(mAlertObserver);
+                log("unRegiseterNetworkAlertObserver E");
+            } catch (Exception e) {
+                // ignored; service lives in system_server
+                loge("unRegisterNetworkAlertObserver failed E");
+            }
+            mInterfaceName = null;
+        }
+        */
+    }
+    private void setIpChangedReceivedOrNot(boolean bFlag) {
+        resetIpv4v6UpdatedStatus();
+        mIsReadyToRecieveIPChanged = bFlag;
+        log("setIpChagnedReceivedOrNot, mIsReadyToRecieveIPChanged: " + bFlag);
     }
 }

@@ -31,6 +31,9 @@ import com.android.internal.telephony.uicc.IccUtils;
 import com.android.internal.util.BitwiseInputStream;
 import com.android.internal.util.BitwiseOutputStream;
 
+import com.mediatek.internal.telephony.cdma.ISmsInterfaces;
+import com.mediatek.internal.telephony.cdma.ViaPolicyManager;
+
 import java.util.ArrayList;
 import java.util.TimeZone;
 
@@ -39,6 +42,9 @@ import java.util.TimeZone;
  */
 public final class BearerData {
     private final static String LOG_TAG = "BearerData";
+
+    // MTK
+    private static ISmsInterfaces sSmsInterfaces = ViaPolicyManager.getSmsInterfaces();
 
     /**
      * Bearer Data Subparameter Identifiers
@@ -359,7 +365,7 @@ public final class BearerData {
     public ArrayList<CdmaSmsCbProgramResults> serviceCategoryProgramResults;
 
 
-    private static class CodingException extends Exception {
+    public static class CodingException extends Exception {
         public CodingException(String s) {
             super(s);
         }
@@ -2083,4 +2089,56 @@ public final class BearerData {
         }
         return null;
     }
+
+    // MTK-START: [ALPS00094531] Orange feature SMS Encoding Type Setting by mtk80589 in 2011.11.22.
+    /**
+     * Calculate the message text encoding length, fragmentation, and other details.
+     *
+     * @param msg message text
+     * @param force7BitEncoding ignore (but still count) illegal characters if true
+     * @param encodingType the encoding type of content of message(GSM 7-bit, Unicode or Automatic)
+     * @return septet count, or -1 on failure
+     */
+    public static TextEncodingDetails calcTextEncodingDetails(CharSequence msg,
+            boolean force7BitEncoding, int encodingType) {
+        TextEncodingDetails ted;
+        int septets = countAsciiSeptets(msg, force7BitEncoding);
+        if(encodingType == SmsConstants.ENCODING_16BIT) {
+            Rlog.d(LOG_TAG, "16bit in cdma");
+            septets = -1;
+        }
+        if (septets != -1 && septets <= SmsConstants.MAX_USER_DATA_SEPTETS) {
+            ted = new TextEncodingDetails();
+            ted.msgCount = 1;
+            ted.codeUnitCount = septets;
+            ted.codeUnitsRemaining = SmsConstants.MAX_USER_DATA_SEPTETS - septets;
+            ted.codeUnitSize = SmsConstants.ENCODING_7BIT;
+        } else {
+            //Rlog.d(LOG_TAG, "(divide message use this)sync with send method, when send, use " +
+            //        "sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding) to" +
+            //        " get encode type and send with the encode type, search XXXXXX for send");
+            /*ted = com.android.internal.telephony.gsm.SmsMessage.calculateLength(
+                    msg, force7BitEncoding, encodingType);*/
+            Rlog.d(LOG_TAG, "gsm can understand the control character, but cdma ignore it(<0x20)");
+            ted = sSmsInterfaces.calcTextEncodingDetails(msg, force7BitEncoding);
+            if (ted.msgCount == 1 && ted.codeUnitSize == SmsConstants.ENCODING_7BIT) {
+                // We don't support single-segment EMS, so calculate for 16-bit
+                // TODO: Consider supporting single-segment EMS
+                ted.codeUnitCount = msg.length();
+                int octets = ted.codeUnitCount * 2;
+                if (octets > SmsConstants.MAX_USER_DATA_BYTES) {
+                    ted.msgCount = (octets + (SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER - 1)) /
+                            SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER;
+                    ted.codeUnitsRemaining = ((ted.msgCount *
+                            SmsConstants.MAX_USER_DATA_BYTES_WITH_HEADER) - octets) / 2;
+                } else {
+                    ted.msgCount = 1;
+                    ted.codeUnitsRemaining = (SmsConstants.MAX_USER_DATA_BYTES - octets)/2;
+                }
+                ted.codeUnitSize = SmsConstants.ENCODING_16BIT;
+            }
+        }
+        return ted;
+    }
+    // MTK-END: [ALPS00094531] Orange feature SMS Encoding Type Setting by mtk80589 in 2011.11.22.
 }

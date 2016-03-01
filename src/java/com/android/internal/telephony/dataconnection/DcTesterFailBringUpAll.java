@@ -105,4 +105,11 @@ public class DcTesterFailBringUpAll {
     private void log(String s) {
         Rlog.d(LOG_TAG, s);
     }
+
+    // MTK
+
+    void updatePhone(PhoneBase phone) {
+        log("DcTesterFailBringUpAll: updatePhone");
+        mPhone = phone;
+    }
 }

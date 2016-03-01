@@ -22,6 +22,7 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.Registrant;
 import android.os.RegistrantList;
+import android.os.SystemProperties;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.CommandsInterface;
@@ -88,6 +89,42 @@ public class UiccCardApplication {
     private RegistrantList mPinLockedRegistrants = new RegistrantList();
     private RegistrantList mPersoLockedRegistrants = new RegistrantList();
 
+    // MTK
+    private int mPhoneId;
+
+    private static final int EVENT_QUERY_NETWORK_LOCK_DONE = 101;
+    private static final int EVENT_CHANGE_NETWORK_LOCK_DONE = 102;
+    private static final int EVENT_RADIO_NOTAVAILABLE = 103;
+    // [ALPS01827777]--- START ---
+    private static final int EVENT_PUK1_CHANGE_PIN1_DONE = 104;
+    private static final int EVENT_PUK2_CHANGE_PIN2_DONE = 105;
+    // [ALPS01827777]--- END ---
+
+
+    // [02772] start
+    static final String[] UICCCARDAPPLICATION_PROPERTY_RIL_UICC_TYPE = {
+        "gsm.ril.uicctype",
+        "gsm.ril.uicctype.2",
+        "gsm.ril.uicctype.3",
+        "gsm.ril.uicctype.4",
+    };
+    protected String mIccType = null; /* Add for USIM detect */
+    // [02772] end
+
+    private static final String PROPERTY_PIN1_RETRY[] = {
+        "gsm.sim.retry.pin1",
+        "gsm.sim.retry.pin1.2",
+        "gsm.sim.retry.pin1.3",
+        "gsm.sim.retry.pin1.4",
+    };
+
+    private static final String PROPERTY_PIN2_RETRY[] = {
+        "gsm.sim.retry.pin2",
+        "gsm.sim.retry.pin2.2",
+        "gsm.sim.retry.pin2.3",
+        "gsm.sim.retry.pin2.4",
+    };
+
     UiccCardApplication(UiccCard uiccCard,
                         IccCardApplicationStatus as,
                         Context c,
@@ -103,6 +140,16 @@ public class UiccCardApplication {
         mPin1Replaced = (as.pin1_replaced != 0);
         mPin1State = as.pin1;
         mPin2State = as.pin2;
+
+        // MTK
+        // Modem workaround: AT+EPIN? might get wrong result
+        // Suppose USIM and ISIM using the same PIN and ISIM application only be created
+        // in case of USIM ready.
+        // Reference CR: ALPS01841211
+        if (mAppType == AppType.APPTYPE_ISIM) {
+            mAppState = AppState.APPSTATE_READY;
+            mPin1State = PinState.PINSTATE_UNKNOWN;
+        }
 
         mContext = c;
         mCi = ci;
@@ -138,6 +185,16 @@ public class UiccCardApplication {
             mPin1Replaced = (as.pin1_replaced != 0);
             mPin1State = as.pin1;
             mPin2State = as.pin2;
+
+            // MTK
+            // Modem workaround: AT+EPIN? might get wrong result
+            // Suppose USIM and ISIM using the same PIN and ISIM application only be created
+            // in case of USIM ready.
+            // Reference CR: ALPS01841211
+            if (mAppType == AppType.APPTYPE_ISIM) {
+                mAppState = AppState.APPSTATE_READY;
+                mPin1State = PinState.PINSTATE_UNKNOWN;
+            }
 
             if (mAppType != oldAppType) {
                 if (mIccFh != null) { mIccFh.dispose();}
@@ -381,6 +438,9 @@ public class UiccCardApplication {
                 case EVENT_PIN2_PUK2_DONE:
                 case EVENT_CHANGE_PIN1_DONE:
                 case EVENT_CHANGE_PIN2_DONE:
+                // MTK
+                case EVENT_PUK1_CHANGE_PIN1_DONE:
+                case EVENT_PUK2_CHANGE_PIN2_DONE:
                     // a PIN/PUK/PIN2/PUK2 complete
                     // request has completed. ar.userObj is the response Message
                     int attemptsRemaining = -1;
@@ -412,6 +472,61 @@ public class UiccCardApplication {
                 case EVENT_RADIO_UNAVAILABLE:
                     if (DBG) log("handleMessage (EVENT_RADIO_UNAVAILABLE)");
                     mAppState = AppState.APPSTATE_UNKNOWN;
+                    break;
+                // MTK
+                // Need to query lock setting since it might be changed when
+                // entering PUK to change PIN.
+                // xen0n: Seems just some seriously dubious considerations,
+                // so commented out for simplicity. Not sure if doing this
+                // would lock people out of their phones though...
+                /*
+                case EVENT_PUK1_CHANGE_PIN1_DONE:
+                    log("EVENT_PUK1_CHANGE_PIN1_DONE");
+                    int attemptsRemainingPuk = -1;
+                    ar = (AsyncResult) msg.obj;
+                    if ((ar.exception != null) && (ar.result != null)) {
+                        attemptsRemainingPuk = parsePinPukErrorResult(ar);
+                    }
+                    Message responsePuk = (Message) ar.userObj;
+                    AsyncResult.forMessage(responsePuk).exception = ar.exception;
+                    responsePuk.arg1 = attemptsRemainingPuk;
+                    responsePuk.sendToTarget();
+                    queryPin1State();
+                    break;
+                case EVENT_PUK2_CHANGE_PIN2_DONE:
+                    int attemptsRemainingPuk2 = -1;
+                    ar = (AsyncResult) msg.obj;
+                    if ((ar.exception != null) && (ar.result != null)) {
+                        attemptsRemainingPuk2 = parsePinPukErrorResult(ar);
+                    }
+                    Message responsePuk2 = (Message) ar.userObj;
+                    AsyncResult.forMessage(responsePuk2).exception = ar.exception;
+                    responsePuk2.arg1 = attemptsRemainingPuk2;
+                    responsePuk2.sendToTarget();
+                    queryFdn();
+                    break;
+                */
+                case EVENT_QUERY_NETWORK_LOCK_DONE:
+                    if (DBG) log("handleMessage (EVENT_QUERY_NETWORK_LOCK)");
+                    ar = (AsyncResult) msg.obj;
+
+                    if (ar.exception != null) {
+                        Rlog.e(LOG_TAG, "Error query network lock with exception "
+                            + ar.exception);
+                    }
+                    AsyncResult.forMessage((Message) ar.userObj, ar.result, ar.exception);
+                    ((Message) ar.userObj).sendToTarget();
+                    break;
+                case EVENT_CHANGE_NETWORK_LOCK_DONE:
+                    if (DBG) log("handleMessage (EVENT_CHANGE_NETWORK_LOCK)");
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception != null) {
+                        Rlog.e(LOG_TAG, "Error change network lock with exception "
+                            + ar.exception);
+                    }
+                    AsyncResult.forMessage(((Message) ar.userObj)).exception
+                                                        = ar.exception;
+                    ((Message) ar.userObj).sendToTarget();
                     break;
                 default:
                     loge("Unknown Event " + msg.what);
@@ -957,5 +1072,89 @@ public class UiccCardApplication {
                     + ((Registrant)mPersoLockedRegistrants.get(i)).getHandler());
         }
         pw.flush();
+    }
+
+    // MTK
+
+    private RegistrantList mFdnChangedRegistrants = new RegistrantList();
+
+    public void registerForFdnChanged(Handler h, int what, Object obj) {
+        synchronized (mLock) {
+            Registrant r = new Registrant(h, what, obj);
+            mFdnChangedRegistrants.add(r);
+        }
+    }
+
+    public void unregisterForFdnChanged(Handler h) {
+        synchronized (mLock) {
+            mFdnChangedRegistrants.remove(h);
+        }
+    }
+
+    public int getSlotId() {
+        return mPhoneId;
+    }
+
+    private void notifyFdnChangedRegistrants() {
+        if (mDestroyed) {
+            return;
+        }
+
+        mFdnChangedRegistrants.notifyRegistrants();
+    }
+
+    public String getIccCardType() {
+         if (mIccType == null || mIccType.equals("")) {
+            mIccType = SystemProperties.get(UICCCARDAPPLICATION_PROPERTY_RIL_UICC_TYPE[mPhoneId]);
+         }
+
+        log("getIccCardType(): mIccType = " + mIccType);
+        return mIccType;
+    }
+
+    //MTK-START [mtk80601][111215][ALPS00093395]
+    /**
+     * Check whether ICC network lock is enabled
+     * This is an async call which returns lock state to applications directly
+     */
+    public void queryIccNetworkLock(int category, Message onComplete) {
+        if (DBG) log("queryIccNetworkLock(): category =  " + category);
+
+        switch(category) {
+            case CommandsInterface.CAT_NETWOEK:
+            case CommandsInterface.CAT_NETOWRK_SUBSET:
+            case CommandsInterface.CAT_CORPORATE:
+            case CommandsInterface.CAT_SERVICE_PROVIDER:
+            case CommandsInterface.CAT_SIM:
+                mCi.queryNetworkLock(category, mHandler.obtainMessage(EVENT_QUERY_NETWORK_LOCK_DONE, onComplete));
+                break;
+            default:
+                Rlog.e(LOG_TAG, "queryIccNetworkLock unknown category = " + category);
+                break;
+        }
+   }
+
+    /**
+     * Set the ICC network lock enabled or disabled
+     * When the operation is complete, onComplete will be sent to its handler
+     */
+    public void setIccNetworkLockEnabled(int category,
+            int lockop, String password, String data_imsi, String gid1, String gid2, Message onComplete) {
+        if (DBG) log("SetIccNetworkEnabled(): category = " + category
+            + " lockop = " + lockop + " password = " + password
+            + " data_imsi = " + data_imsi + " gid1 = " + gid1 + " gid2 = " + gid2);
+
+        switch(lockop) {
+            case CommandsInterface.OP_REMOVE:
+            case CommandsInterface.OP_ADD:
+            case CommandsInterface.OP_LOCK:
+            case CommandsInterface.OP_PERMANENT_UNLOCK:
+            case CommandsInterface.OP_UNLOCK:
+                mCi.setNetworkLock(category, lockop, password, data_imsi, gid1, gid2, mHandler.obtainMessage(EVENT_CHANGE_NETWORK_LOCK_DONE, onComplete));
+                break;
+            default:
+                Rlog.e(LOG_TAG, "SetIccNetworkEnabled unknown operation" + lockop);
+                break;
+        }
     }
 }

@@ -191,6 +191,7 @@ public class CDMALTEPhone extends CDMAPhone {
         return ret;
     }
 
+    // needed by MTK
     /**
      * Sets the "current" field in the telephony provider according to the
      * build-time operator numeric property
@@ -198,7 +199,7 @@ public class CDMALTEPhone extends CDMAPhone {
      * @return true for success; false otherwise.
      */
     @Override
-    boolean updateCurrentCarrierInProvider(String operatorNumeric) {
+    public boolean updateCurrentCarrierInProvider(String operatorNumeric) {
         boolean retVal;
         if (mUiccController.getUiccCardApplication(mPhoneId, UiccController.APP_FAM_3GPP) == null) {
             if (DBG) log("updateCurrentCarrierInProvider APP_FAM_3GPP == null");

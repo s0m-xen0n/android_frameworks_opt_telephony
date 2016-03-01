@@ -31,6 +31,10 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 
+//VoLTE
+import java.util.ArrayList;
+import com.mediatek.internal.telephony.DedicateDataCallState;
+
 /**
  * This is RIL_Data_Call_Response_v5 from ril.h
  */
@@ -50,6 +54,12 @@ public class DataCallResponse {
     public int suggestedRetryTime = -1;
     public String [] pcscf = new String[0];
     public int mtu = PhoneConstants.UNSET_MTU;
+
+    // MTK
+    //VoLTE
+    // public String[] pcscf = new String[0]; //the P-CSCF
+    public ArrayList<DedicateDataCallState> concatenateDataCallState = new ArrayList<DedicateDataCallState>();
+    public DedicateDataCallState defaultBearerDataCallState = new DedicateDataCallState();
 
     /**
      * Class returned by onSetupConnectionCompleted.
@@ -225,6 +235,25 @@ public class DataCallResponse {
                     linkProperties.addRoute(new RouteInfo(ia));
                 }
 
+                ///M: Add for ePDG feature @{
+                if (SystemProperties.getInt("ro.mtk_epdg_support", 0) == 1) {
+                    if (pcscf != null && pcscf.length > 0) {
+                        for (String addr : pcscf) {
+                            addr = addr.trim();
+                            if (addr.isEmpty()) {
+                                continue;
+                            }
+                            try {
+                                linkProperties.addPcscfServer(
+                                    decIpToHex(addr));
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        }
+                    }
+                }
+                ///@}
+
                 // set interface MTU
                 // this may clobber the setting read from the APN db, but that's ok
                 linkProperties.setMtu(mtu);
@@ -253,5 +282,27 @@ public class DataCallResponse {
         }
 
         return result;
+    }
+
+    // MTK
+
+    private InetAddress decIpToHex(String ipAddr) {
+        String[] ipElements = ipAddr.split("\\.");
+        if (ipElements.length == 16) {
+            StringBuffer sb = new StringBuffer();
+            for (int i = 0; i < ipElements.length; i += 2) {
+                int a1 = Integer.parseInt(ipElements[i]);
+                String hex1 = String.format(java.util.Locale.US, "%02x", a1);
+                int a2 = Integer.parseInt(ipElements[i + 1]);
+                String hex2 = String.format(java.util.Locale.US, "%02x", a2);
+                sb.append(hex1 + hex2);
+                if ((i + 2) != ipElements.length) {
+                    sb.append(":");
+                }
+            }
+            ipAddr = sb.toString();
+        }
+        Rlog.d(LOG_TAG, "Process:" + ipAddr);
+        return NetworkUtils.numericToInetAddress(ipAddr);
     }
 }

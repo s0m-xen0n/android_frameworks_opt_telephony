@@ -47,6 +47,19 @@ import com.android.internal.telephony.uicc.IsimRecords;
 import com.android.internal.telephony.uicc.UiccCard;
 import com.android.internal.telephony.uicc.UsimServiceTable;
 
+import com.android.internal.telephony.dataconnection.DctController;
+import com.mediatek.internal.telephony.FemtoCellInfo;
+import com.mediatek.internal.telephony.NetworkInfoWithAcT;
+
+//VoLTE
+import com.mediatek.internal.telephony.QosStatus;
+import com.mediatek.internal.telephony.TftStatus;
+import com.mediatek.internal.telephony.PcscfInfo;
+import com.mediatek.internal.telephony.DedicateBearerProperties;
+import com.mediatek.internal.telephony.DefaultBearerConfig;
+import com.mediatek.internal.telephony.ltedc.LteDcPhoneProxy;
+import com.android.internal.telephony.dataconnection.DcFailCause;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.List;
@@ -57,12 +70,13 @@ import com.android.internal.telephony.dataconnection.DctController;
 public class PhoneProxy extends Handler implements Phone {
     public final static Object lockForRadioTechnologyChange = new Object();
 
-    private Phone mActivePhone;
-    private CommandsInterface mCommandsInterface;
-    private IccSmsInterfaceManager mIccSmsInterfaceManager;
-    private IccPhoneBookInterfaceManagerProxy mIccPhoneBookInterfaceManagerProxy;
-    private PhoneSubInfoProxy mPhoneSubInfoProxy;
-    private IccCardProxy mIccCardProxy;
+    // needed for MTK SVLTE
+    protected Phone mActivePhone;
+    protected CommandsInterface mCommandsInterface;
+    protected IccSmsInterfaceManager mIccSmsInterfaceManager;
+    protected IccPhoneBookInterfaceManagerProxy mIccPhoneBookInterfaceManagerProxy;
+    protected PhoneSubInfoProxy mPhoneSubInfoProxy;
+    protected IccCardProxy mIccCardProxy;
 
     private boolean mResetModemOnRadioTechnologyChange = false;
 
@@ -173,7 +187,8 @@ public class PhoneProxy extends Handler implements Phone {
         Rlog.e(LOG_TAG, "[PhoneProxy] " + msg);
     }
 
-    private void phoneObjectUpdater(int newVoiceRadioTech) {
+    // needed by MTK SVLTE
+    protected void phoneObjectUpdater(int newVoiceRadioTech) {
         logd("phoneObjectUpdater: newVoiceRadioTech=" + newVoiceRadioTech);
 
         if (mActivePhone != null) {
@@ -298,6 +313,13 @@ public class PhoneProxy extends Handler implements Phone {
         }
 
         if(mActivePhone != null) {
+            /// M: [C2K][IRAT] Reset DcTracker when update phone object. @{
+            if (this instanceof LteDcPhoneProxy) {
+                logd("[IRAT_PhoneProxy] deleteAndCreatePhone reset DcTracker.");
+                ((PhoneBase) mActivePhone).mDcTracker = ((LteDcPhoneProxy) this)
+                        .getSharedDcTracker();
+            }
+            /// @}
             CallManager.getInstance().registerPhone(mActivePhone);
             if (imsPhone != null) {
                 mActivePhone.acquireOwnershipOfImsPhone(imsPhone);
@@ -1411,6 +1433,15 @@ public class PhoneProxy extends Handler implements Phone {
 
     public void updateDataConnectionTracker() {
         logd("Updating Data Connection Tracker");
+
+        /// M: [C2K][IRAT] Reset DcTracker when update phone object. @{
+        if (this instanceof LteDcPhoneProxy) {
+            ((LteDcPhoneProxy) this).getSharedDcTracker().update();
+            logd("[IRAT_PhoneProxy] updateDataConnectionTracker.");
+            return;
+        }
+        /// @}
+
         if (mActivePhone instanceof CDMALTEPhone) {
             ((CDMALTEPhone)mActivePhone).updateDataConnectionTracker();
         } else if (mActivePhone instanceof GSMPhone) {
@@ -1588,5 +1619,425 @@ public class PhoneProxy extends Handler implements Phone {
         }
         pw.flush();
         pw.println("++++++++++++++++++++++++++++++++");
+    }
+
+    // MTK
+
+    @Override
+    public void registerForTtyModeReceived(Handler h, int what, Object obj) {
+        mActivePhone.registerForTtyModeReceived(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForTtyModeReceived(Handler h) {
+        mActivePhone.unregisterForTtyModeReceived(h);
+    }
+
+    @Override
+    public void setRadioCapability(RadioCapability rc, Message response) {
+        mActivePhone.setRadioCapability(rc, response);
+    }
+
+    @Override
+    public int getRadioAccessFamily() {
+        return mActivePhone.getRadioAccessFamily();
+    }
+
+    @Override
+    public int getSupportedRadioAccessFamily() {
+        return mCommandsInterface.getSupportedRadioAccessFamily();
+    }
+
+    @Override
+    public void registerForRadioCapabilityChanged(Handler h, int what, Object obj) {
+        mActivePhone.registerForRadioCapabilityChanged(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForRadioCapabilityChanged(Handler h) {
+        mActivePhone.unregisterForRadioCapabilityChanged(h);
+    }
+
+    public IccCardProxy getPhoneIccCardProxy() {
+        return mIccCardProxy;
+    }
+
+    /* M: SS part */
+    public void getFacilityLock(String facility, String password, Message onComplete) {
+        mActivePhone.getFacilityLock(facility, password, onComplete);
+    }
+
+    public void setFacilityLock(String facility, boolean enable,
+        String password, Message onComplete) {
+        mActivePhone.setFacilityLock(facility, enable, password, onComplete);
+    }
+
+    public void changeBarringPassword(String facility, String oldPwd,
+        String newPwd, Message onComplete) {
+        mActivePhone.changeBarringPassword(facility, oldPwd, newPwd, onComplete);
+    }
+
+    public void changeBarringPassword(String facility, String oldPwd,
+        String newPwd, String newCfm, Message onComplete) {
+        mActivePhone.changeBarringPassword(facility, oldPwd, newPwd, newCfm, onComplete);
+    }
+
+    /**
+     * Get the UT CS fallback status.
+     *
+     * @return The UT CS fallback status:
+     *         {@link PhoneConstants.UT_CSFB_PS_PREFERRED}
+     *         {@link PhoneConstants.UT_CSFB_ONCE}
+     *         {@link PhoneConstants.UT_CSFB_UNTIL_NEXT_BOOT}.
+     */
+    public int getCsFallbackStatus() {
+        return mActivePhone.getCsFallbackStatus();
+    }
+    /* M: SS part end */
+
+    /// M: SS OP01 Ut @{
+    @Override
+    public void getCallForwardInTimeSlot(int commandInterfaceCFReason,
+            Message onComplete) {
+        mActivePhone.getCallForwardInTimeSlot(commandInterfaceCFReason,
+                onComplete);
+    }
+
+    @Override
+    public void setCallForwardInTimeSlot(int commandInterfaceCFAction,
+            int commandInterfaceCFReason, String dialingNumber,
+            int timerSeconds, long[] timeSlot, Message onComplete) {
+        mActivePhone.setCallForwardInTimeSlot(commandInterfaceCFAction,
+                commandInterfaceCFReason, dialingNumber, timerSeconds, timeSlot, onComplete);
+    }
+
+    @Override
+    public long[] getTimeSlot() {
+        return mActivePhone.getTimeSlot();
+    }
+    /// @}
+
+    /// M: CC010: Add RIL interface @{
+    public void registerForCrssSuppServiceNotification(Handler h, int what, Object obj) {
+        mActivePhone.registerForCrssSuppServiceNotification(h, what, obj);
+    }
+
+    public void unregisterForCrssSuppServiceNotification(Handler h) {
+        mActivePhone.unregisterForCrssSuppServiceNotification(h);
+    }
+
+    public void registerForVoiceCallIncomingIndication(
+            Handler h, int what, Object obj) {
+        mActivePhone.registerForVoiceCallIncomingIndication(h, what, obj);
+    }
+
+    public void unregisterForVoiceCallIncomingIndication(Handler h) {
+        mActivePhone.unregisterForVoiceCallIncomingIndication(h);
+    }
+
+    public void registerForCipherIndication(Handler h, int what, Object obj) {
+        mActivePhone.registerForCipherIndication(h, what, obj);
+    }
+
+    public void unregisterForCipherIndication(Handler h) {
+        mActivePhone.unregisterForCipherIndication(h);
+    }
+    /// @}
+
+    /// M: CC077: 2/3G CAPABILITY_HIGH_DEF_AUDIO @{
+    @Override
+    public void registerForSpeechCodecInfo(Handler h, int what, Object obj) {
+        mActivePhone.registerForSpeechCodecInfo(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForSpeechCodecInfo(Handler h) {
+        mActivePhone.unregisterForSpeechCodecInfo(h);
+    }
+    /// @}
+
+    /// M: CC010: Add RIL interface @{
+    public void hangupAll() throws CallStateException {
+        mActivePhone.hangupAll();
+    }
+    /// @}
+
+    // ALPS00302702 RAT balancing
+    public int getEfRatBalancing() {
+        return mActivePhone.getEfRatBalancing();
+    }
+
+    // MVNO-API START
+    public String getMvnoMatchType() {
+        return mActivePhone.getMvnoMatchType();
+    }
+
+    public String getMvnoPattern(String type) {
+        return mActivePhone.getMvnoPattern(type);
+    }
+
+    public void sendBtSimProfile(int nAction, int nType, String strData, Message response) {
+         mActivePhone.sendBtSimProfile(nAction, nType, strData, response);
+    }
+    // MVNO-API END
+
+    @Override
+    public void doGeneralSimAuthentication(int sessionId, int mode, int tag,
+            String param1, String param2, Message result) {
+        mActivePhone.doGeneralSimAuthentication(sessionId, mode, tag, param1, param2 , result);
+    }
+
+    @Override
+    public void queryPhbStorageInfo(int type, Message response) {
+        mActivePhone.queryPhbStorageInfo(type, response);
+    }
+
+
+    @Override
+    public void cancelAvailableNetworks(Message response) {
+        mActivePhone.cancelAvailableNetworks(response);
+    }
+
+    public void setNetworkSelectionModeSemiAutomatic(OperatorInfo network, Message response) {
+        if (mActivePhone.getPhoneType() == PhoneConstants.PHONE_TYPE_GSM)
+        {
+           ((GSMPhone) mActivePhone).setNetworkSelectionModeSemiAutomatic(network, response);
+        }
+    }
+
+    public void registerForNeighboringInfo(Handler h, int what, Object obj) {
+        mActivePhone.registerForNeighboringInfo(h, what, obj);
+    }
+
+    public void unregisterForNeighboringInfo(Handler h) {
+        mActivePhone.unregisterForNeighboringInfo(h);
+    }
+
+    public void registerForNetworkInfo(Handler h, int what, Object obj) {
+        mActivePhone.registerForNetworkInfo(h, what, obj);
+    }
+
+    public void unregisterForNetworkInfo(Handler h) {
+        mActivePhone.unregisterForNetworkInfo(h);
+    }
+
+    public void refreshSpnDisplay() {
+        mActivePhone.refreshSpnDisplay();
+    }
+
+    public int getNetworkHideState() {
+        return mActivePhone.getNetworkHideState();
+    }
+
+    public String getLocatedPlmn() {
+        return mActivePhone.getLocatedPlmn();
+    }
+
+    public void getPolCapability(Message onComplete) {
+        mActivePhone.getPolCapability(onComplete);
+    }
+
+    public void getPol(Message onComplete) {
+        mActivePhone.getPol(onComplete);
+    }
+
+    public void setPolEntry(NetworkInfoWithAcT networkWithAct, Message onComplete) {
+        mActivePhone.setPolEntry(networkWithAct, onComplete);
+    }
+
+    // Femtocell (CSG) feature START
+    public void getFemtoCellList(String operatorNumeric, int rat, Message response) {
+        mActivePhone.getFemtoCellList(operatorNumeric, rat, response);
+    }
+
+    public void abortFemtoCellList(Message response) {
+        mActivePhone.abortFemtoCellList(response);
+    }
+
+    public void selectFemtoCell(FemtoCellInfo femtocell, Message response) {
+        mActivePhone.selectFemtoCell(femtocell, response);
+    }
+    // Femtocell (CSG) feature END
+
+//VoLTE
+    public int enableDedicateBearer(String apnType, boolean signalingFlag, QosStatus qosStatus, TftStatus tftStatus) {
+        return mActivePhone.enableDedicateBearer(apnType, signalingFlag, qosStatus, tftStatus);
+    }
+
+    public int disableDedicateBearer(String reason, int cid) {
+        return mActivePhone.disableDedicateBearer(reason, cid);
+    }
+
+    public int modifyDedicateBearer(int cid, QosStatus qosStatus, TftStatus tftStatus) {
+        return mActivePhone.modifyDedicateBearer(cid, qosStatus, tftStatus);
+    }
+
+    public int abortEnableDedicateBearer(String reason, int ddcId) {
+        return mActivePhone.abortEnableDedicateBearer(reason, ddcId);
+    }
+
+    public int pcscfDiscovery(String apnType, int cid, Message onComplete) {
+        return mActivePhone.pcscfDiscovery(apnType, cid, onComplete);
+    }
+
+    public PcscfInfo getPcoPcscf(String apnType) {
+        return mActivePhone.getPcoPcscf(apnType);
+    }
+
+    public DedicateBearerProperties getDefaultBearerProperties(String apnType) {
+        return mActivePhone.getDefaultBearerProperties(apnType);
+    }
+
+    public DedicateBearerProperties [] getConcatenatedBearersPropertiesOfDefaultBearer(String apnType) {
+        return mActivePhone.getConcatenatedBearersPropertiesOfDefaultBearer(apnType);
+    }
+
+    public int setDefaultBearerConfig(String apnType,DefaultBearerConfig defaultBearerConfig) {
+        return mActivePhone.setDefaultBearerConfig(apnType, defaultBearerConfig);
+    }
+
+    public int [] getDeactivateCidArray(String apnType) {
+        return mActivePhone.getDeactivateCidArray(apnType);
+    }
+
+    public boolean isEmergencyCid(int cid) {
+        return mActivePhone.isEmergencyCid(cid);
+    }
+
+    public DcFailCause getLastDataConnectionFailCause(String apnType) {
+        return mActivePhone.getLastDataConnectionFailCause(apnType);
+    }
+
+    public boolean isDedicateBearer(int cid) {
+        return mActivePhone.isDedicateBearer(cid);
+    }
+
+    public void clearDataBearer() {
+        mActivePhone.clearDataBearer();
+    }
+
+    /// M: IMS feature. @{
+    public void registerForImsConferenceCallNotification(Handler h, int what, Object obj) {
+        mActivePhone.registerForImsConferenceCallNotification(h, what, obj);
+    }
+
+    public void unregisterForImsConferenceCallNotification(Handler h) {
+        mActivePhone.unregisterForImsConferenceCallNotification(h);
+    }
+
+    public void registerForCallInfoChangedNotification(Handler h, int what, Object obj) {
+        mActivePhone.registerForCallInfoChangedNotification(h, what, obj);
+    }
+
+    public void unregisterForCallInfoChangedNotification(Handler h) {
+        mActivePhone.unregisterForCallInfoChangedNotification(h);
+    }
+
+    /**
+    * Add a new member to VoLTE conference call according to the parameter - address.
+    *
+    * @param confCallId IMS(VoLTE) conference call id
+    * @param address The address(phone number or SIP URI)
+    * @param callIdToAdd The call id of call which is preparing to merge to current conference call.
+    *
+    */
+    public void addConferenceMember(int confCallId, String address, int callIdToAdd) throws CallStateException {
+        mActivePhone.addConferenceMember(confCallId, address, callIdToAdd);
+    }
+
+    @Override
+    public Connection dial(List<String> numbers, int videoState) throws CallStateException {
+        return mActivePhone.dial(numbers, videoState);
+    }
+    /// @}
+    /// M: [C2K] for eng mode start
+    @Override
+    public void registerForEngModeNetworkInfo(Handler h, int what, Object obj) {
+        mActivePhone.registerForEngModeNetworkInfo(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForEngModeNetworkInfo(Handler h) {
+        mActivePhone.unregisterForEngModeNetworkInfo(h);
+    }
+    /// M: [C2K] for eng mode end
+
+    /// M: c2k modify, PhoneProxy API. @{
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+        mActivePhone.requestSwitchHPF(enableHPF, response);
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+        mActivePhone.setAvoidSYS(avoidSYS, response);
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+        mActivePhone.getAvoidSYSList(response);
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+        mActivePhone.queryCDMANetworkInfo(response);
+    }
+
+    /// @}
+
+    /// M: [C2K][SVLTE] Support modem remote SIM access. @{
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
+        mCommandsInterface.configModemStatus(modemStatus, remoteSimProtocol, result);
+    }
+    /// @}
+
+    @Override
+    public void setPhoneId(int phoneId) {
+        mActivePhone.setPhoneId(phoneId);
+    }
+
+    @Override
+    public void registerForCdmaCallAccepted(Handler h, int what, Object obj) {
+        mActivePhone.registerForCdmaCallAccepted(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForCdmaCallAccepted(Handler h) {
+        mActivePhone.unregisterForCdmaCallAccepted(h);
+    }
+    ///M: Add for SVLTE. @{
+    @Override
+    public void registerForSvlteServiceStateChanged(Handler h, int what, Object obj) {
+        mActivePhone.registerForServiceStateChanged(h, what, obj);
+    }
+
+    @Override
+    public void unregisterForSvlteServiceStateChanged(Handler h) {
+        mActivePhone.unregisterForServiceStateChanged(h);
+    }
+
+    @Override
+    public ServiceState getSvlteServiceState() {
+        return null;
+    }
+    ///@}
+
+    @Override
+    public void setRadioAccessFamily(int radioAccessFamily) {
+        mActivePhone.setRadioAccessFamily(radioAccessFamily);
+    }
+
+    /// M: ALPS01953873. @{
+    @Override
+    public boolean isFeatureSupported(FeatureType feature) {
+        return mActivePhone.isFeatureSupported(feature);
+    }
+    /// @}
+
+    @Override
+    public void switchAntenna(int callState, int ratMode) {
+        mActivePhone.switchAntenna(callState, ratMode);
     }
 }
