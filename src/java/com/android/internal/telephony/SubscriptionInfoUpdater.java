@@ -16,16 +16,21 @@
 
 package com.android.internal.telephony;
 
+import static android.Manifest.permission.READ_PHONE_STATE;
+
+import android.app.ActivityManagerNative;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
 import android.os.SystemProperties;
+import android.os.UserHandle;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.telephony.Rlog;
@@ -41,6 +46,7 @@ import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
 import com.android.internal.telephony.uicc.IccCardStatus.CardState;
 import com.android.internal.telephony.uicc.IccConstants;
+import com.android.internal.telephony.uicc.IccCardProxy;
 import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.IccFileHandler;
 import com.android.internal.telephony.uicc.IccUtils;
@@ -54,7 +60,15 @@ import android.net.Uri;
 import android.database.Cursor;
 import android.text.TextUtils;
 
+import com.mediatek.internal.telephony.DefaultSmsSimSettings;
+import com.mediatek.internal.telephony.DefaultVoiceCallSubSettings;
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteModeController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+import com.mediatek.internal.telephony.uicc.SvlteUiccUtils;
+
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
  *@hide
@@ -70,10 +84,17 @@ public class SubscriptionInfoUpdater extends Handler {
     private static final int EVENT_SIM_READY_OR_LOCKED = 5;
     private static final int EVENT_ICC_CHANGED = 6;
     private static final int EVENT_STACK_READY = 7;
+    // MTK
+    private static final int EVENT_RADIO_AVAILABLE = 101;
+    private static final int EVENT_RADIO_UNAVAILABLE = 102;
+    // For the feature SIM Hot Swap with Common Slot
+    private static final int EVENT_SIM_NO_CHANGED = 103;
+    private static final int EVENT_SIM_PLUG_IN = 104;
+    private static final int EVENT_SIM_PLUG_OUT = 105;
     private static final String ICCID_STRING_FOR_NO_SIM = "";
     private static final String ICCID_STRING_FOR_NV = "DUMMY_NV_ID";
     /**
-     *  int[] sInsertSimState maintains all slots' SIM inserted status currently,
+     *  int[] mInsertSimState maintains all slots' SIM inserted status currently,
      *  it may contain 4 kinds of values:
      *    SIM_NOT_INSERT : no SIM inserted in slot i now
      *    SIM_CHANGED    : a valid SIM insert in slot i and is different SIM from last time
@@ -95,6 +116,10 @@ public class SubscriptionInfoUpdater extends Handler {
     public static final int STATUS_SIM3_INSERTED = 0x04;
     public static final int STATUS_SIM4_INSERTED = 0x08;
 
+    // MTK
+    // Key used to read/write the current IMSI. Updated on SIM_STATE_CHANGED - LOADED.
+    public static final String CURR_SUBID = "curr_subid";
+
     private static Phone[] mPhone;
     private static Context mContext = null;
     private static CardState[] sCardState = new CardState[PROJECT_SIM_NUM];
@@ -108,6 +133,46 @@ public class SubscriptionInfoUpdater extends Handler {
     // To prevent repeatedly update flow every time receiver SIM_STATE_CHANGE
     private boolean isNVSubAvailable = false;
     private static boolean mNeedUpdate = true;
+
+    // MTK
+    private static int[] sIsUpdateAvailable = new int[PROJECT_SIM_NUM];
+    private static Intent sUpdateIntent = null;
+    protected AtomicReferenceArray<IccRecords> mIccRecords
+            = new AtomicReferenceArray<IccRecords>(PROJECT_SIM_NUM);
+    private static final int sReadICCID_retry_time = 1000;
+    private int mReadIccIdCount = 0;
+
+    static String[] PROPERTY_ICCID_SIM = {
+        "ril.iccid.sim1",
+        "ril.iccid.sim2",
+        "ril.iccid.sim3",
+        "ril.iccid.sim4",
+    };
+
+    private static final String PROPERTY_3G_SIM = "persist.radio.simswitch";
+    private static final String PROPERTY_DEFAULT_DATA_ICCID = "persist.radio.data.iccid";
+    private static boolean sIsC2kSupport = CdmaFeatureOptionUtils.isMtkC2KSupport();
+    private static boolean sIsSvlteSupport = CdmaFeatureOptionUtils.isCdmaLteDcSupport();
+    private static boolean sIsC2kWpSupport = CdmaFeatureOptionUtils.isC2KWorldPhoneP2Support();
+    private int mOldSvlteSlotId = SvlteModeController.getActiveSvlteModeSlotId();
+
+    // MTK-START
+    // For the feature SIM Hot Swap with Common Slot
+    private static final String COMMON_SLOT_PROPERTY = "ro.mtk_sim_hot_swap_common_slot";
+    private static int[] mCollectSimState = new int[PROJECT_SIM_NUM];
+    private static boolean mCommonSlotResetDone = true;
+    // MTK-END
+
+    private Runnable mReadIccIdPropertyRunnable = new Runnable() {
+        public void run() {
+            ++mReadIccIdCount;
+            if (mReadIccIdCount <= 10) {
+                if (!readIccIdProperty()) {
+                    postDelayed(mReadIccIdPropertyRunnable, sReadICCID_retry_time);
+                }
+            }
+        }
+    };
 
 
     public SubscriptionInfoUpdater(Context context, Phone[] phoneProxy, CommandsInterface[] ci) {
@@ -123,10 +188,64 @@ public class SubscriptionInfoUpdater extends Handler {
         ModemStackController.getInstance().registerForStackReady(this, EVENT_STACK_READY, null);
         for (int i = 0; i < PROJECT_SIM_NUM; i++) {
             sCardState[i] = CardState.CARDSTATE_ABSENT;
+            sIsUpdateAvailable[i] = -1;
+            mIccId[i] = SystemProperties.get(PROPERTY_ICCID_SIM[i], "");
+            mCollectSimState[i] = -1;
+            if (mIccId[i].length() == 3) {
+                logd("No SIM insert :" + i);
+                if (sIsSvlteSupport) {
+                    if (SvlteUiccUtils.getInstance().isHaveCard(i)
+                        && !SvlteUiccUtils.getInstance().isUsimSim(i)) {
+                        logd("CT 3G card is not ready, set iccid to null!");
+                        mIccId[i] = null;
+                    }
+                }
+            }
+            logd("mIccId[" + i + "]:" + mIccId[i]);
+        }
+
+        // MTK
+        if (isAllIccIdQueryDone()) {
+            new Thread() {
+                public void run() {
+                    updateSubscriptionInfoByIccId();
+                }
+            } .start();
         }
 
         IntentFilter intentFilter = new IntentFilter(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        // MTK
+        intentFilter.addAction("android.intent.action.ACTION_SHUTDOWN_IPO");
+        intentFilter.addAction(TelephonyIntents.ACTION_COMMON_SLOT_NO_CHANGED);
+        if ("OP09".equals(SystemProperties.get("ro.operator.optr", "OM"))) {
+            intentFilter.addAction(Intent.ACTION_LOCALE_CHANGED);
+        }
+        if (sIsC2kWpSupport) {
+            intentFilter.addAction(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_START);
+            intentFilter.addAction(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_DONE);
+        }
+        intentFilter.addAction(IccCardProxy.ACTION_INTERNAL_SIM_STATE_CHANGED);
         mContext.registerReceiver(sReceiver, intentFilter);
+
+        // MTK
+        for (int i = 0; i < sCi.length; i++) {
+            Integer index = new Integer(i);
+            sCi[i].registerForNotAvailable(this, EVENT_RADIO_UNAVAILABLE, index);
+            sCi[i].registerForAvailable(this, EVENT_RADIO_AVAILABLE, index);
+            if (SystemProperties.get(COMMON_SLOT_PROPERTY).equals("1")) {
+                sCi[i].registerForSimPlugIn(this, EVENT_SIM_PLUG_IN, index);
+                sCi[i].registerForSimPlugOut(this, EVENT_SIM_PLUG_OUT, index);
+            }
+            if (sIsC2kWpSupport) {
+                logd("sCi[" + i + "]:" + sCi[i]);
+                logd("svlte" + i + " lte ci:" +
+                    SvlteUtils.getSvltePhoneProxy(i).getLtePhone().mCi);
+                logd("svlte" + i + " nlte ci:" +
+                    SvlteUtils.getSvltePhoneProxy(i).getNLtePhone().mCi);
+                logd("svlte" + i + " active ci:" +
+                    ((PhoneBase) SvlteUtils.getSvltePhoneProxy(i).getActivePhone()).mCi);
+            }
+        }
     }
 
     private final BroadcastReceiver sReceiver = new  BroadcastReceiver() {
@@ -136,19 +255,35 @@ public class SubscriptionInfoUpdater extends Handler {
             String action = intent.getAction();
             logd("Action: " + action);
 
-            if (!action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) {
-                return;
+            // MTK
+            int slotId = 0;
+            String simStatus = "";
+
+            // if (!action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) {
+            //     return;
+            // }
+            if (action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED) ||
+                action.equals(IccCardProxy.ACTION_INTERNAL_SIM_STATE_CHANGED)) {
+                slotId = intent.getIntExtra(PhoneConstants.PHONE_KEY,
+                        SubscriptionManager.INVALID_SIM_SLOT_INDEX);
+                logd("slotId: " + slotId);
+                if (slotId == SubscriptionManager.INVALID_SIM_SLOT_INDEX) {
+                    return;
+                }
+
+                simStatus = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+                logd("simStatus: " + simStatus);
             }
 
-            int slotId = intent.getIntExtra(PhoneConstants.PHONE_KEY,
-                    SubscriptionManager.INVALID_SIM_SLOT_INDEX);
-            logd("slotId: " + slotId);
-            if (slotId == SubscriptionManager.INVALID_SIM_SLOT_INDEX) {
-                return;
-            }
+            // int slotId = intent.getIntExtra(PhoneConstants.PHONE_KEY,
+            //         SubscriptionManager.INVALID_SIM_SLOT_INDEX);
+            // logd("slotId: " + slotId);
+            // if (slotId == SubscriptionManager.INVALID_SIM_SLOT_INDEX) {
+            //     return;
+            // }
 
-            String simStatus = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
-            logd("simStatus: " + simStatus);
+            // String simStatus = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+            // logd("simStatus: " + simStatus);
 
             if (action.equals(TelephonyIntents.ACTION_SIM_STATE_CHANGED)) {
                 slotId = intent.getIntExtra(PhoneConstants.SLOT_KEY,
@@ -171,6 +306,86 @@ public class SubscriptionInfoUpdater extends Handler {
                     logd("Ignoring simStatus: " + simStatus);
                 }
             }
+            // MTK
+            else if (action.equals(IccCardProxy.ACTION_INTERNAL_SIM_STATE_CHANGED)) {
+                if (IccCardConstants.INTENT_VALUE_ICC_LOCKED.equals(simStatus)) {
+                    String reason = intent.getStringExtra(
+                        IccCardConstants.INTENT_KEY_LOCKED_REASON);
+                    sendMessage(obtainMessage(EVENT_SIM_READY_OR_LOCKED, slotId, -1, reason));
+                } else if (IccCardConstants.INTENT_VALUE_ICC_LOADED.equals(simStatus)) {
+                    sendMessage(obtainMessage(EVENT_SIM_LOADED, slotId, -1));
+                    mReadIccIdCount = 10;
+                } else {
+                    logd("Ignoring simStatus: " + simStatus);
+                }
+            // MTK-START
+            } else if (action.equals("android.intent.action.ACTION_SHUTDOWN_IPO")) {
+                for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+                    clearIccId(i);
+                }
+                mSubscriptionManager.clearSubscriptionInfo();
+                if (sUpdateIntent != null) {
+                    mContext.removeStickyBroadcast(sUpdateIntent);
+                }
+            } else if (action.equals(Intent.ACTION_LOCALE_CHANGED)) {
+                int[] subIdList = mSubscriptionManager.getActiveSubscriptionIdList();
+                for (int subId : subIdList) {
+                    updateSubName(subId);
+                }
+            } else if (action.equals(TelephonyIntents.ACTION_COMMON_SLOT_NO_CHANGED)) {
+                slotId = intent.getIntExtra(PhoneConstants.PHONE_KEY,
+                        SubscriptionManager.INVALID_SIM_SLOT_INDEX);
+                logd("[Common Slot] NO_CHANTED, slotId: " + slotId);
+                sendMessage(obtainMessage(EVENT_SIM_NO_CHANGED, slotId, -1));
+            } else if (action.equals(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_START)) {
+                int svlteSlotId = SvlteModeController.getActiveSvlteModeSlotId();
+                logd("oldSvlteSlotId:" + mOldSvlteSlotId + ", svlteSlotId:" + svlteSlotId);
+                if (mOldSvlteSlotId != svlteSlotId) {
+                    for (int i = 0; i < sCi.length; i++) {
+                        logd("svlte" + i + " lte ci:" +
+                            SvlteUtils.getSvltePhoneProxy(i).getLtePhone().mCi);
+                        logd("svlte" + i + " nlte ci:" +
+                            SvlteUtils.getSvltePhoneProxy(i).getNLtePhone().mCi);
+                        logd("svlte" + i + " active ci:" +
+                            ((PhoneBase) SvlteUtils.getSvltePhoneProxy(i).getActivePhone()).mCi);
+                    }
+                    boolean willDoSimSwitch = willDoSimSwitch();
+                    for (int i = 0; i < sCi.length; i++) {
+                        if (willDoSimSwitch) {
+                            sIsUpdateAvailable[i] = -1;
+                        } else {
+                            sIsUpdateAvailable[i] = 0;
+                        }
+                        sCi[i] = ((PhoneBase) SvlteUtils.getSvltePhoneProxy(i).
+                                        getActivePhone()).mCi;
+                        sCi[i].unregisterForNotAvailable(SubscriptionInfoUpdater.this);
+                        sCi[i].unregisterForAvailable(SubscriptionInfoUpdater.this);
+                        logd("unregister for sCi[" + i + "]:" + sCi[i]);
+                    }
+                }
+            } else if (action.equals(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_DONE)) {
+                int svlteSlotId = SvlteModeController.getActiveSvlteModeSlotId();
+                logd("oldSvlteSlotId:" + mOldSvlteSlotId + ", svlteSlotId:" + svlteSlotId);
+                if (mOldSvlteSlotId != svlteSlotId) {
+                    for (int i = 0; i < sCi.length; i++) {
+                        sCi[i] = ((PhoneBase) SvlteUtils.getSvltePhoneProxy(i).
+                                        getActivePhone()).mCi;
+                        Integer index = new Integer(i);
+                        sCi[i].registerForNotAvailable(SubscriptionInfoUpdater.this,
+                                    EVENT_RADIO_UNAVAILABLE, index);
+                        sCi[i].registerForAvailable(SubscriptionInfoUpdater.this,
+                                    EVENT_RADIO_AVAILABLE, index);
+                        logd("sCi[" + i + "]:" + sCi[i]);
+                        logd("svlte" + i + " lte ci:" +
+                            SvlteUtils.getSvltePhoneProxy(i).getLtePhone().mCi);
+                        logd("svlte" + i + " nlte ci:" +
+                            SvlteUtils.getSvltePhoneProxy(i).getNLtePhone().mCi);
+                        logd("svlte" + i + " active ci:" +
+                            ((PhoneBase) SvlteUtils.getSvltePhoneProxy(i).getActivePhone()).mCi);
+                    }
+                    mOldSvlteSlotId = svlteSlotId;
+                }
+            }
             logd("[Receiver]-");
         }
     };
@@ -181,6 +396,24 @@ public class SubscriptionInfoUpdater extends Handler {
                 logd("Wait for SIM" + (i + 1) + " IccId");
                 return false;
             }
+            // MTK-START
+            if (SystemProperties.get(COMMON_SLOT_PROPERTY).equals("1")) {
+                for (int j = (i+1); j < PROJECT_SIM_NUM; j++) {
+                    logd("isAllIccIdQueryDone, [" + mCollectSimState[i] + ", " +
+                            mCollectSimState[j] + "]");
+                    if (mCollectSimState[j] != mCollectSimState[i]) {
+                        return false;
+                    }
+                    logd("isAllIccIdQueryDone, [" + mCommonSlotResetDone + ", "
+                            + mIccId[i] + ", " + mIccId[j] + "]");
+                    if (!mCommonSlotResetDone &&
+                            mIccId[i].equals(ICCID_STRING_FOR_NO_SIM) &&
+                            !mIccId[i].equals(mIccId[j])) {
+                        return false;
+                    }
+                }
+            }
+            // MTK-END
         }
         logd("All IccIds query complete");
 
@@ -276,6 +509,97 @@ public class SubscriptionInfoUpdater extends Handler {
                 handleSimReadyOrLocked(msg.arg1);
                 break;
 
+            // MTK
+            /*
+            case EVENT_SIM_LOCKED_QUERY_ICCID_DONE: {
+                AsyncResult ar = (AsyncResult) msg.obj;
+                QueryIccIdUserObj uObj = (QueryIccIdUserObj) ar.userObj;
+                int slotId = uObj.slotId;
+                logd("handleMessage : <EVENT_SIM_LOCKED_QUERY_ICCID_DONE> SIM" + (slotId + 1));
+                if (ar.exception == null) {
+                    if (ar.result != null) {
+                        byte[] data = (byte[])ar.result;
+                        mIccId[slotId] = IccUtils.parseIccIdToString(data, 0, data.length);
+                    } else {
+                        logd("Null ar");
+                        mIccId[slotId] = ICCID_STRING_FOR_NO_SIM;
+                    }
+                } else {
+                    if (ar.exception instanceof CommandException &&
+                        ((CommandException) (ar.exception)).getCommandError() ==
+                                CommandException.Error.RADIO_NOT_AVAILABLE) {
+                        mIccId[slotId] = "";
+                    } else {
+                        mIccId[slotId] = ICCID_STRING_FOR_NO_SIM;
+                    }
+                    logd("Query IccId fail: " + ar.exception);
+                }
+                logd("mIccId[" + slotId + "] = " + mIccId[slotId]);
+                // MTK-START
+                //if (isAllIccIdQueryDone()) {
+                //    updateSubscriptionInfoByIccId();
+                //}
+                //broadcastSimStateChanged(slotId, IccCardConstants.INTENT_VALUE_ICC_LOCKED,
+                //                     uObj.reason);
+                // MTK-START
+                mCollectSimState[slotId] = 1;
+                // MTK-END
+                // xen0n: don't spawn threads
+                handleSimLocked(uObj.reason, slotId);
+                // MTK-END
+                break;
+            }
+            */
+
+            case EVENT_RADIO_UNAVAILABLE:
+                Integer index = getCiIndex(msg);
+                logd("handleMessage : <EVENT_RADIO_UNAVAILABLE> SIM" + (index + 1));
+                sIsUpdateAvailable[index] = 0;
+                mCollectSimState[index] = -1;
+                break;
+
+            case EVENT_RADIO_AVAILABLE:
+                index = getCiIndex(msg);
+                logd("handleMessage : <EVENT_RADIO_AVAILABLE> SIM" + (index + 1));
+                sIsUpdateAvailable[index]++;
+
+                if (checkIsAvailable()) {
+                    if (!sIsC2kSupport) {
+                        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+                            clearIccId(i);
+                        }
+                        mSubscriptionManager.clearSubscriptionInfo();
+                    }
+                    mReadIccIdCount = 0;
+                    if (!readIccIdProperty()) {
+                        postDelayed(mReadIccIdPropertyRunnable, sReadICCID_retry_time);
+                    }
+                }
+                sIsUpdateAvailable[index] = 1;
+                break;
+
+            case EVENT_SIM_NO_CHANGED: {
+                // xen0n: don't spawn threads
+                handleSimNoChanged(msg.arg1);
+                break;
+            }
+
+            case EVENT_SIM_PLUG_IN: {
+                if (!mCommonSlotResetDone) {
+                    mCommonSlotResetDone = true;
+                    logd("[Common Slot] reset mCollectSimState");
+                    for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+                        mCollectSimState[i] = 0;
+                    }
+                }
+                break;
+            }
+
+            case EVENT_SIM_PLUG_OUT: {
+                mCommonSlotResetDone = false;
+                break;
+            }
+
             default:
                 logd("Unknown msg:" + msg.what);
         }
@@ -345,6 +669,7 @@ public class SubscriptionInfoUpdater extends Handler {
     }
  
    private void handleSimReadyOrLocked(int slotId) {
+        // MTK TODO: somehow port handleLocked
         if (mIccId[slotId] != null && mIccId[slotId].equals(ICCID_STRING_FOR_NO_SIM)) {
             logd("SIM" + (slotId + 1) + " hot plug in");
         }
@@ -365,6 +690,14 @@ public class SubscriptionInfoUpdater extends Handler {
             return;
         }
         mIccId[slotId] = records.getIccId();
+        String iccId = SystemProperties.get(PROPERTY_ICCID_SIM[slotId], "");
+        if (!iccId.equals(mIccId[slotId])) {
+            logd("NeedUpdate");
+            // MTK TODO: is this important?
+            // needUpdate = true;
+            mIccId[slotId] = iccId;
+        }
+        mCollectSimState[slotId] = 1;
 
         if (mTelephonyMgr == null) {
             mTelephonyMgr = TelephonyManager.from(mContext);
@@ -396,6 +729,8 @@ public class SubscriptionInfoUpdater extends Handler {
                 contentResolver.update(SubscriptionManager.CONTENT_URI, number,
                         SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID + "="
                         + Integer.toString(subId), null);
+                // MTK
+                SubscriptionController.getInstance().setDisplayNumber(msisdn, subId, false);
             }
 
             SubscriptionInfo subInfo = mSubscriptionManager.getActiveSubscriptionInfo(subId);
@@ -405,6 +740,7 @@ public class SubscriptionInfoUpdater extends Handler {
 
             if (subInfo != null && subInfo.getNameSource() !=
                     SubscriptionManager.NAME_SOURCE_USER_INPUT) {
+                // MTK TODO: port MVNO handling code
                 if (!TextUtils.isEmpty(simCarrierName)) {
                     nameToSet = simCarrierName;
                 } else {
@@ -415,16 +751,67 @@ public class SubscriptionInfoUpdater extends Handler {
                 contentResolver.update(SubscriptionManager.CONTENT_URI, name,
                         SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID
                         + "=" + Integer.toString(subId), null);
+                // MTK
+                mSubscriptionManager.setDisplayName(nameToSet, subId);
+                logd("[handleSimLoaded] subId = " + subId + ", sim name = " + nameToSet);
+            }
+
+            // MTK
+            /* Update preferred network type and network selection mode on SIM change.
+             * Storing last subId in SharedPreference for now to detect SIM change. */
+            SharedPreferences sp =
+                    PreferenceManager.getDefaultSharedPreferences(mContext);
+            int storedSubId = sp.getInt(CURR_SUBID + slotId, -1);
+
+            if (storedSubId != subId) {
+                int networkType = Settings.Global.getInt(mPhone[slotId].getContext().getContentResolver(),
+                        Settings.Global.PREFERRED_NETWORK_MODE + subId,
+                        RILConstants.PREFERRED_NETWORK_MODE);
+
+                // MTK network mode logic is central controled by GsmSST
+                logd("Possibly a new IMSI. Set sub(" + subId + ") networkType to " + networkType);
+                Settings.Global.putInt(mPhone[slotId].getContext().getContentResolver(),
+                        Settings.Global.PREFERRED_NETWORK_MODE + subId,
+                        networkType);
+
+                // Only support automatic selection mode on SIM change.
+                mPhone[slotId].getNetworkSelectionMode(
+                        obtainMessage(EVENT_GET_NETWORK_SELECTION_MODE_DONE, new Integer(slotId)));
+
+                // Update stored subId
+                SharedPreferences.Editor editor = sp.edit();
+                editor.putInt(CURR_SUBID + slotId, subId);
+                editor.apply();
             }
 
         } else {
             logd("Invalid subId, could not update ContentResolver");
         }
+
+        // MTK
+        broadcastSimStateChanged(slotId, IccCardConstants.INTENT_VALUE_ICC_LOADED, null);
     }
 
     private void handleSimAbsent(int slotId) {
         if (mIccId[slotId] != null && !mIccId[slotId].equals(ICCID_STRING_FOR_NO_SIM)) {
             logd("SIM" + (slotId + 1) + " hot plug out");
+        }
+
+        // MTK-START
+        // If card inserted state no changed, no need to update.
+        // Return directly to avoid unneccessary update cause timing issue.
+        if (mIccId[slotId] != null && mIccId[slotId].equals(ICCID_STRING_FOR_NO_SIM)) {
+            logd("SIM" + (slotId + 1) + " absent - card state no changed.");
+            return;
+        }
+        // MTK-END
+
+        mIccId[slotId] = ICCID_STRING_FOR_NO_SIM;
+        // MTK-START
+        mCollectSimState[slotId] = 1;
+        // MTK-END
+        if (isAllIccIdQueryDone()) {
+            updateSubscriptionInfoByIccId();
         }
     }
 
@@ -452,7 +839,7 @@ public class SubscriptionInfoUpdater extends Handler {
                 mFh[slotId].loadEFTransparent(IccConstants.EF_ICCID,
                         obtainMessage(EVENT_QUERY_ICCID_DONE, new Integer(slotId)));
             } else {
-                logd("NOT Querying IccId its already set sIccid[" + slotId + "]=" + iccId);
+                logd("NOT Querying IccId its already set sIccId[" + slotId + "]=" + iccId);
             }
         } else {
             //Reset to CardState to ABSENT so that on next EVENT_ICC_CHANGED, ICCID can be read.
@@ -615,9 +1002,69 @@ public class SubscriptionInfoUpdater extends Handler {
                 contentResolver.update(SubscriptionManager.CONTENT_URI, value,
                         SubscriptionManager.UNIQUE_KEY_SUBSCRIPTION_ID + "="
                         + Integer.toString(temp.getSubscriptionId()), null);
+                // MTK
+                SubscriptionController.getInstance().setDisplayNumber(msisdn,
+                            temp.getSubscriptionId(), false);
             }
         }
 
+        // MTK
+        setAllDefaultSub(subInfos);
+
+        // true if any slot has no SIM this time, but has SIM last time
+        boolean hasSimRemoved = false;
+        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+            if (mIccId[i] != null && mIccId[i].equals(ICCID_STRING_FOR_NO_SIM)
+                    && !oldIccId[i].equals(ICCID_STRING_FOR_NO_SIM)) {
+                hasSimRemoved = true;
+                break;
+            }
+        }
+
+        if (nNewCardCount == 0) {
+            int i;
+            if (hasSimRemoved) {
+                // no new SIM, at least one SIM is removed, check if any SIM is repositioned
+                for (i = 0; i < PROJECT_SIM_NUM; i++) {
+                    if (mInsertSimState[i] == SIM_REPOSITION) {
+                        logd("No new SIM detected and SIM repositioned");
+                        setUpdatedData(SubscriptionManager.EXTRA_VALUE_REPOSITION_SIM,
+                                nSubCount, nNewSimStatus);
+                        break;
+                    }
+                }
+                if (i == PROJECT_SIM_NUM) {
+                    // no new SIM, no SIM is repositioned => at least one SIM is removed
+                    logd("No new SIM detected and SIM removed");
+                    setUpdatedData(SubscriptionManager.EXTRA_VALUE_REMOVE_SIM,
+                            nSubCount, nNewSimStatus);
+                }
+            } else {
+                // no SIM is removed, no new SIM, just check if any SIM is repositioned
+                for (i = 0; i < PROJECT_SIM_NUM; i++) {
+                    if (mInsertSimState[i] == SIM_REPOSITION) {
+                        logd("No new SIM detected and SIM repositioned");
+                        setUpdatedData(SubscriptionManager.EXTRA_VALUE_REPOSITION_SIM,
+                                nSubCount, nNewSimStatus);
+                        break;
+                    }
+                }
+                if (i == PROJECT_SIM_NUM) {
+                    // all status remain unchanged
+                    logd("[updateSimInfoByIccId] All SIM inserted into the same slot");
+                    setUpdatedData(SubscriptionManager.EXTRA_VALUE_NOCHANGE,
+                            nSubCount, nNewSimStatus);
+                }
+            }
+        } else {
+            logd("New SIM detected");
+            setUpdatedData(SubscriptionManager.EXTRA_VALUE_NEW_SIM, nSubCount, nNewSimStatus);
+        }
+
+        SubscriptionController.getInstance().setReadyState(true);
+
+        SubscriptionController.getInstance().notifySubscriptionInfoChanged();
+        // MTK end
         SubscriptionController.getInstance().handleSubscriptionInfoReady();
         logd("updateSubscriptionInfoByIccId:- SsubscriptionInfo update complete");
     }
@@ -642,5 +1089,280 @@ public class SubscriptionInfoUpdater extends Handler {
 
     private void logd(String message) {
         Rlog.d(LOG_TAG, message);
+    }
+
+    // xen0n
+
+    private void handleSimLocked(String reason, int slotId) {
+        // not necessary as we're not multi-threaded
+        // if (isAllIccIdQueryDone()) {
+            updateSubscriptionInfoByIccId();
+        // }
+        broadcastSimStateChanged(slotId,
+                IccCardConstants.INTENT_VALUE_ICC_LOCKED, reason);
+    }
+
+    private void handleSimNoChanged(int slotId) {
+        logd("[Common Slot] processing SIM_NO_CHANGED on main thread instead");
+        mCollectSimState[slotId] = 1;
+        // if (isAllIccIdQueryDone()) {
+            updateSubscriptionInfoByIccId();
+        // }
+    }
+
+    // MTK
+
+    private void setUpdatedData(int detectedType, int subCount, int newSimStatus) {
+
+        Intent intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+
+        logd("[setUpdatedData]+ ");
+
+        if (detectedType == SubscriptionManager.EXTRA_VALUE_NEW_SIM) {
+            intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,
+                    SubscriptionManager.EXTRA_VALUE_NEW_SIM);
+            intent.putExtra(SubscriptionManager.INTENT_KEY_SIM_COUNT, subCount);
+            intent.putExtra(SubscriptionManager.INTENT_KEY_NEW_SIM_SLOT, newSimStatus);
+        } else if (detectedType == SubscriptionManager.EXTRA_VALUE_REPOSITION_SIM) {
+            intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,
+                    SubscriptionManager.EXTRA_VALUE_REPOSITION_SIM);
+            intent.putExtra(SubscriptionManager.INTENT_KEY_SIM_COUNT, subCount);
+        } else if (detectedType == SubscriptionManager.EXTRA_VALUE_REMOVE_SIM) {
+            intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,
+                    SubscriptionManager.EXTRA_VALUE_REMOVE_SIM);
+            intent.putExtra(SubscriptionManager.INTENT_KEY_SIM_COUNT, subCount);
+        } else if (detectedType == SubscriptionManager.EXTRA_VALUE_NOCHANGE) {
+            intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,
+                    SubscriptionManager.EXTRA_VALUE_NOCHANGE);
+        }
+
+        logd("broadcast intent ACTION_SUBINFO_RECORD_UPDATED : [" + detectedType + ", "
+                + subCount + ", " + newSimStatus + "]");
+        sUpdateIntent = intent;
+        mContext.sendStickyBroadcast(sUpdateIntent);
+        logd("[setUpdatedData]- ");
+    }
+
+    private void broadcastSimStateChanged(int slotId, String state, String reason) {
+        Intent i = new Intent(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        // TODO - we'd like this intent to have a single snapshot of all sim state,
+        // but until then this should not use REPLACE_PENDING or we may lose
+        // information
+        // i.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING
+        //         | Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+        i.addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
+        i.putExtra(PhoneConstants.PHONE_NAME_KEY, "Phone");
+        i.putExtra(IccCardConstants.INTENT_KEY_ICC_STATE, state);
+        i.putExtra(IccCardConstants.INTENT_KEY_LOCKED_REASON, reason);
+        SubscriptionManager.putPhoneIdAndSubIdExtra(i, slotId);
+        logd("Broadcasting intent ACTION_SIM_STATE_CHANGED " +
+             state + " reason " + reason +
+             " for mCardIndex : " + slotId);
+        ActivityManagerNative.broadcastStickyIntent(i, READ_PHONE_STATE,
+                UserHandle.USER_ALL);
+    }
+
+    private void setAllDefaultSub(List<SubscriptionInfo> subInfos) {
+        logd("[setAllDefaultSub]+ ");
+        DefaultSmsSimSettings.setSmsTalkDefaultSim(subInfos, mContext);
+        logd("[setSmsTalkDefaultSim]- ");
+        DefaultVoiceCallSubSettings.setVoiceCallDefaultSub(subInfos);
+        logd("[setVoiceCallDefaultSub]- ");
+    }
+
+    private void clearIccId(int slotId) {
+        // synchronized (mLock) {
+            logd("[clearIccId], slotId = " + slotId);
+            mFh[slotId] = null;
+            mIccId[slotId] = null;
+        // }
+    }
+
+    private boolean readIccIdProperty() {
+        logd("readIccIdProperty +, retry_count = " + mReadIccIdCount);
+        if (!sIsC2kSupport) {
+            for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+                if (mIccId[i] == null || mIccId[i].equals("")) {
+                    mIccId[i] = SystemProperties.get(PROPERTY_ICCID_SIM[i], "");
+                    if (mIccId[i].length() == 3) {
+                        logd("No SIM insert :" + i);
+                        if (sIsSvlteSupport) {
+                            if (SvlteUiccUtils.getInstance().isHaveCard(i)
+                                && !SvlteUiccUtils.getInstance().isUsimSim(i)) {
+                                logd("CT 3G card is not ready, set iccid to null!");
+                                mIccId[i] = null;
+                            }
+                        }
+                    }
+                    logd("mIccId[" + i + "]:" + mIccId[i]);
+                }
+            }
+            if (isAllIccIdQueryDone()) {
+                // new Thread() {
+                //     public void run() {
+                        updateSubscriptionInfoByIccId();
+                //     }
+                // } .start();
+                // ALPS01934211 : Need to wait for updateSubscriptionInfoByIccId done
+                // synchronized (mLock) {
+                    return true;
+                // }
+            } else {
+                return false;
+            }
+        } else {
+            if (checkAllIccIdReady()) {
+                if (needUpdateSubInfo()) {
+                    // new Thread() {
+                    //     public void run() {
+                            updateSubscriptionInfoByIccId();
+                    //     }
+                    // } .start();
+                    // ALPS01934211 : Need to wait for updateSubscriptionInfoByIccId done
+                    // synchronized (mLock) {
+                        return true;
+                    // }
+                } else {
+                    Intent intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+                    intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,
+                                        SubscriptionManager.EXTRA_VALUE_NOCHANGE);
+                    logd("Broadcast ACTION_SUBINFO_RECORD_UPDATED with nochange");
+                    sUpdateIntent = intent;
+                    mContext.sendStickyBroadcast(sUpdateIntent);
+                    return true;
+                }
+            } else {
+                return false;
+            }
+        }
+    }
+
+    private Integer getCiIndex(Message msg) {
+        AsyncResult ar;
+        Integer index = new Integer(PhoneConstants.DEFAULT_CARD_INDEX);
+
+        /*
+         * The events can be come in two ways. By explicitly sending it using
+         * sendMessage, in this case the user object passed is msg.obj and from
+         * the CommandsInterface, in this case the user object is msg.obj.userObj
+         */
+        if (msg != null) {
+            if (msg.obj != null && msg.obj instanceof Integer) {
+                index = (Integer) msg.obj;
+            } else if (msg.obj != null && msg.obj instanceof AsyncResult) {
+                ar = (AsyncResult) msg.obj;
+                if (ar.userObj != null && ar.userObj instanceof Integer) {
+                    index = (Integer) ar.userObj;
+                }
+            }
+        }
+        return index;
+    }
+
+    private boolean checkIsAvailable() {
+        boolean result = true;
+        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+            if (sIsUpdateAvailable[i] <= 0) {
+                logd("sIsUpdateAvailable[" + i + "] = " + sIsUpdateAvailable[i]);
+                result = false;
+                break;
+            }
+        }
+        logd("checkIsAvailable result = " + result);
+        return result;
+    }
+
+    private void updateSubName(int subId) {
+        SubscriptionInfo subInfo =
+                mSubscriptionManager.getSubscriptionInfo(subId);
+        if (subInfo != null
+                && subInfo.getNameSource() != SubscriptionManager.NAME_SOURCE_USER_INPUT) {
+            // SpnOverride spnOverride = SpnOverride.getInstance();
+            String nameToSet;
+            String carrierName = TelephonyManager.getDefault().getSimOperator(subId);
+            int slotId = SubscriptionManager.getSlotId(subId);
+            logd("updateSubName, carrierName = " + carrierName + ", subId = " + subId);
+            if (SubscriptionManager.isValidSlotId(slotId)) {
+                /*
+                if (spnOverride.containsCarrierEx(carrierName)) {
+                    if (TelephonyManager.getDefault().getSimCount() > 1) {
+                        nameToSet = spnOverride.lookupOperatorName(subId, carrierName,
+                            true, mContext) + " 0" + Integer.toString(slotId + 1);
+                    } else {
+                        nameToSet = spnOverride.lookupOperatorName(subId, carrierName,
+                            true, mContext);
+                    }
+                    logd("SPN found, name = " + nameToSet);
+                } else {
+                */
+                    nameToSet = "CARD " + Integer.toString(slotId + 1);
+                    logd("SPN not found, set name to " + nameToSet);
+                // }
+                mSubscriptionManager.setDisplayName(nameToSet, subId);
+            }
+        }
+    }
+
+    private boolean willDoSimSwitch() {
+        int phoneId = SubscriptionManager.INVALID_PHONE_INDEX;
+        String defaultIccid = SystemProperties.get(PROPERTY_DEFAULT_DATA_ICCID);
+        String currIccid = null;
+        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+            currIccid = SystemProperties.get(PROPERTY_ICCID_SIM[i]);
+            if (defaultIccid.equals(currIccid)) {
+                phoneId = i;
+                break;
+            }
+        }
+        logd("defaultIccid:" + defaultIccid + ", phoneId:" + phoneId);
+        if (phoneId != SubscriptionManager.INVALID_PHONE_INDEX) {
+            String curr3GSim = SystemProperties.get(PROPERTY_3G_SIM, "");
+            logd("Current 3G Sim:" + curr3GSim);
+            if (curr3GSim != null && !curr3GSim.equals("")) {
+                int curr3GPhoneId = Integer.parseInt(curr3GSim);
+                if (curr3GPhoneId != (phoneId + 1)) {
+                    logd("Current 3G phone doesn't equals target phone, need switch");
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean checkAllIccIdReady() {
+        String iccId = "";
+        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+            iccId = SystemProperties.get(PROPERTY_ICCID_SIM[i], "");
+            if (iccId.length() == 3) {
+                logd("No SIM insert :" + i);
+                if (sIsSvlteSupport) {
+                    if (SvlteUiccUtils.getInstance().isHaveCard(i)
+                        && !SvlteUiccUtils.getInstance().isUsimSim(i)) {
+                        logd("CT 3G card is not ready, set iccid to null!");
+                        iccId = null;
+                    }
+                }
+            }
+            logd("iccId[" + i + "] = " + iccId);
+            if (iccId == null || iccId.equals("")) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean needUpdateSubInfo() {
+        boolean result = false;
+        String newIccid = "";
+        for (int i = 0; i < PROJECT_SIM_NUM; i++) {
+            newIccid = SystemProperties.get(PROPERTY_ICCID_SIM[i], "");
+            if (mIccId[i] == null || !mIccId[i].equals(newIccid)) {
+                logd("needUpdateSubInfo, slot[" + i + "] changes from "
+                    + mIccId[i] + " to " + newIccid);
+                mIccId[i] = newIccid;
+                result = true;
+            }
+        }
+        return result;
     }
 }
