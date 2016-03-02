@@ -240,6 +240,7 @@ public class RadioManager extends Handler  {
             mModemPower[i] = MODEM_POWER_ON;
         }
 
+        /*
         if (!SystemProperties.get("ro.mtk_bsp_package").equals("1")) {
             log("Not BSP Package, register intent!!!");
             IntentFilter filter = new IntentFilter();
@@ -255,6 +256,7 @@ public class RadioManager extends Handler  {
             }
 
         }
+        */
     }
 
     private int convertPhoneCountIntoBitmap(int phoneCount) {
@@ -699,6 +701,7 @@ public class RadioManager extends Handler  {
      */
     public void setRadioPower(boolean power, int phoneId) {
         log("setRadioPower, power=" + power + "  phoneId=" + phoneId);
+
         if (CdmaFeatureOptionUtils.isCdmaLteDcSupport() &&
             !SystemProperties.get(PROPERTY_CONFIG_EMDSTATUS_SEND).equals("1")) {
             log("emdstatus is not sent, wait for " + INITIAL_RETRY_INTERVAL_MSEC + "ms");

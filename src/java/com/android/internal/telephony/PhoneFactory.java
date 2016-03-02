@@ -186,31 +186,46 @@ public class PhoneFactory {
 
                 for (int i = 0; i < numPhones; i++) {
                     //reads the system properties and makes commandsinterface
-                    try {
+                    // try {
 //                        // Get preferred network type.
 //                        TODO: Sishir added this code to but we need a new technique for MSim
 //                        int networkType = calculatePreferredNetworkType(context);
 //                        Rlog.i(LOG_TAG, "Network Type set to " + Integer.toString(networkType));
 
-                        // MTK TODO: not porting the isEvdoDTSupport() code for now
-                        networkModes[i]  = TelephonyManager.getIntAtIndex(
-                                context.getContentResolver(),
-                                Settings.Global.PREFERRED_NETWORK_MODE, i);
-                    } catch (SettingNotFoundException snfe) {
-                        Rlog.e(LOG_TAG, "Settings Exception Reading Value At Index for"+
-                                " Settings.Global.PREFERRED_NETWORK_MODE");
-                        networkModes[i] = preferredNetworkMode;
-                    }
+                    //     // MTK TODO: not porting the isEvdoDTSupport() code for now
+                    //     networkModes[i]  = TelephonyManager.getIntAtIndex(
+                    //             context.getContentResolver(),
+                    //             Settings.Global.PREFERRED_NETWORK_MODE, i);
+                    // } catch (SettingNotFoundException snfe) {
+                    //     Rlog.e(LOG_TAG, "Settings Exception Reading Value At Index for"+
+                    //             " Settings.Global.PREFERRED_NETWORK_MODE");
+                    //     networkModes[i] = preferredNetworkMode;
+                    // }
 
-                    if (sContext.getResources().getBoolean(
-                            com.android.internal.R.bool.config_global_phone_enabled) &&
-                            i == PhoneConstants.PHONE_ID1) {
-                        networkModes[i] = Phone.NT_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
-                        TelephonyManager.putIntAtIndex( context.getContentResolver(),
-                                Settings.Global.PREFERRED_NETWORK_MODE, i, networkModes[i]);
-                    }
+                    // if (sContext.getResources().getBoolean(
+                    //         com.android.internal.R.bool.config_global_phone_enabled) &&
+                    //         i == PhoneConstants.PHONE_ID1) {
+                    //     networkModes[i] = Phone.NT_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
+                    //     TelephonyManager.putIntAtIndex( context.getContentResolver(),
+                    //             Settings.Global.PREFERRED_NETWORK_MODE, i, networkModes[i]);
+                    // }
 
-                    Rlog.i(LOG_TAG, "Network Mode set to " + Integer.toString(networkModes[i]));
+                    // MTK: !CdmaFeatureOptionUtils.isEvdoDTSupport() branch
+                    if (i == (capabilityPhoneId - 1)) {
+                        networkModes[i] = calculatePreferredNetworkType(context);
+                    } else {
+                        networkModes[i] =
+                                (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1)
+                                ? RILConstants.NETWORK_MODE_LTE_GSM_WCDMA
+                                : RILConstants.NETWORK_MODE_GSM_ONLY;
+                    }
+                    /// M: SVLTE solution2 modify, calculate network type for SVLTE @{
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        networkModes[i] = calculateNetworkType(context, i);
+                    }
+                    Rlog.i(LOG_TAG, "RILJ Sub = " + i + "capabilityPhoneId="+ capabilityPhoneId
+                            + " Network Mode set to " + Integer.toString(networkModes[i]));
+
                     // Use reflection to construct the RIL class (defaults to RIL)
                     try {
                         sCommandsInterfaces[i] = instantiateCustomRIL(
@@ -342,10 +357,14 @@ public class PhoneFactory {
                 // CAF_MSIM FIXME need to introduce default phone id ?
             } else if (phoneId == SubscriptionManager.DEFAULT_PHONE_INDEX) {
                 return sProxyPhone;
-            } else if (phoneId >= 0 && phoneId < TelephonyManager.getDefault().getPhoneCount()) {
-                return sProxyPhones[phoneId];
             }
-            return null;
+            // MTK SVLTE
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                phoneId = SvlteUtils.getSvltePhoneIdByPhoneId(phoneId);
+            }
+            return (((phoneId >= 0)
+                            && (phoneId < TelephonyManager.getDefault().getPhoneCount()))
+                    ? sProxyPhones[phoneId] : null);
         }
     }
 
@@ -403,7 +422,13 @@ public class PhoneFactory {
     }
 
     public static int calculatePreferredNetworkType(Context context) {
-        return calculatePreferredNetworkType(context, getDefaultPhoneId());
+        // MTK
+        // return calculatePreferredNetworkType(context, getDefaultPhoneId());
+        int networkType = android.provider.Settings.Global.getInt(context.getContentResolver(),
+                android.provider.Settings.Global.PREFERRED_NETWORK_MODE,
+                RILConstants.PREFERRED_NETWORK_MODE);
+        Rlog.d(LOG_TAG, "calculatePreferredNetworkType: networkType = " + networkType);
+        return networkType;
     }
 
     /**
@@ -414,52 +439,29 @@ public class PhoneFactory {
      */
     // TODO: Fix when we "properly" have TelephonyDevController/SubscriptionController ..
     public static int calculatePreferredNetworkType(Context context, int phoneId) {
+        /*
         int preferredNetworkType = RILConstants.PREFERRED_NETWORK_MODE;
         if (TelephonyManager.getLteOnCdmaModeStatic(phoneId) == PhoneConstants.LTE_ON_CDMA_TRUE) {
             preferredNetworkType = Phone.NT_MODE_GLOBAL;
         }
         int networkType = preferredNetworkType;
+        try {
+            networkType = TelephonyManager.getIntAtIndex(
+                    context.getContentResolver(),
+                    Settings.Global.PREFERRED_NETWORK_MODE, phoneId);
+        } catch (SettingNotFoundException snfe) {
+            Rlog.e(LOG_TAG, "Settings Exception Reading Value At Index for"
+                    + " Settings.Global.PREFERRED_NETWORK_MODE");
+        }
+        Rlog.d(LOG_TAG, "calculatePreferredNetworkType: phoneId = " + phoneId);
+        return networkType;
+        */
         // MTK
-        int capabilityPhoneId = Integer.valueOf(
-                        SystemProperties.get(PhoneConstants.PROPERTY_CAPABILITY_SWITCH, "1")) - 1;
-
-        if (!SvlteUtils.isValidPhoneId(phoneId)) {
-            Rlog.i(LOG_TAG, "calculateNetworkType error, phone id : " + phoneId);
-            return networkType;
-        }
-
-        if (sActiveSvlteModeSlotId == phoneId) {
-            return RILConstants.NETWORK_MODE_CDMA;
-        } else if (SvlteUtils.isValidateSlotId(phoneId)) {
-            if (phoneId == capabilityPhoneId) {
-                networkType = calculatePreferredNetworkType(context);
-            } else {
-                networkType = RILConstants.NETWORK_MODE_GSM_ONLY;
-            }
-            return networkType;
-        }
-
-        phoneId = SvlteUtils.getSlotId(phoneId);
-
-        //handle second phone in svltepohoneproxy
-        if (sActiveSvlteModeSlotId != phoneId) {
-            networkType = RILConstants.NETWORK_MODE_CDMA;
-        } else if (SvlteUtils.isValidateSlotId(phoneId)) {
-            if (phoneId == capabilityPhoneId) {
-                try {
-                    networkType = TelephonyManager.getIntAtIndex(
-                            context.getContentResolver(),
-                            Settings.Global.PREFERRED_NETWORK_MODE, phoneId);
-                } catch (SettingNotFoundException snfe) {
-                    Rlog.e(LOG_TAG, "Settings Exception Reading Value At Index for"
-                            + " Settings.Global.PREFERRED_NETWORK_MODE");
-                }
-            } else {
-                networkType = RILConstants.NETWORK_MODE_GSM_ONLY;
-            }
-        }
-
-        Rlog.d(LOG_TAG, "calculatePreferredNetworkType: phoneId = " + phoneId + " ret = " + networkType);
+        int networkType = android.provider.Settings.Global.getInt(context.getContentResolver(),
+                android.provider.Settings.Global.PREFERRED_NETWORK_MODE + phoneId,
+                RILConstants.PREFERRED_NETWORK_MODE);
+        Rlog.d(LOG_TAG, "calculatePreferredNetworkType: phoneSubId = " + phoneId +
+                " networkType = " + networkType);
         return networkType;
     }
 
@@ -704,8 +706,9 @@ public class PhoneFactory {
         int networkType = -1;
         int cdmaSubscription = CdmaSubscriptionSourceManager.getDefault(context);
         int numPhones = TelephonyManager.getDefault().getPhoneCount();
+        final String sRILClassname = SystemProperties.get("ro.telephony.ril_class", "RIL").trim();
         for (int phoneId = 0; phoneId < numPhones; phoneId++) {
-            networkType = calculatePreferredNetworkType(context, SvlteUtils.getLteDcPhoneId(phoneId));
+            networkType = calculateNetworkType(context, SvlteUtils.getLteDcPhoneId(phoneId));
             Rlog.i(LOG_TAG, "svlteInit, phoneId = " + phoneId + ", networkType = " + networkType);
             if (sActiveSvlteModeSlotId == phoneId) {
                 cdmaPhone = new CDMAPhone(context,
@@ -713,10 +716,20 @@ public class PhoneFactory {
                                           sPhoneNotifier,
                                           phoneId);
 
-                sCommandsInterfaceLteDcs[phoneId] = new RIL(context,
-                                                            networkType,
-                                                            cdmaSubscription,
-                                                            SvlteUtils.getLteDcPhoneId(phoneId));
+                // xen0n: use the same class as in the normal case
+                try {
+                    sCommandsInterfaceLteDcs[phoneId] = instantiateCustomRIL(
+                            sRILClassname,
+                            context,
+                            networkType,
+                            cdmaSubscription,
+                            SvlteUtils.getLteDcPhoneId(phoneId));
+                } catch (Exception e) {
+                    while (true) {
+                        Rlog.e(LOG_TAG, "Unable to construct custom RIL class", e);
+                        try {Thread.sleep(10000);} catch (InterruptedException ie) {}
+                    }
+                }
                 svlteDcPhone = new SvlteDcPhone(context,
                                                 sCommandsInterfaceLteDcs[phoneId],
                                                 sPhoneNotifier,
@@ -730,10 +743,20 @@ public class PhoneFactory {
                                                 sPhoneNotifier,
                                                 phoneId);
                 //sCommandsInterfaceLteDcs is for cdma phone in csfb mode.
-                sCommandsInterfaceLteDcs[phoneId] = new RIL(context,
-                                                            networkType,
-                                                            cdmaSubscription,
-                                                            SvlteUtils.getLteDcPhoneId(phoneId));
+                // xen0n: use the same class as in the normal case
+                try {
+                    sCommandsInterfaceLteDcs[phoneId] = instantiateCustomRIL(
+                            sRILClassname,
+                            context,
+                            networkType,
+                            cdmaSubscription,
+                            SvlteUtils.getLteDcPhoneId(phoneId));
+                } catch (Exception e) {
+                    while (true) {
+                        Rlog.e(LOG_TAG, "Unable to construct custom RIL class", e);
+                        try {Thread.sleep(10000);} catch (InterruptedException ie) {}
+                    }
+                }
                 cdmaPhone = new CDMAPhone(context,
                                           sCommandsInterfaceLteDcs[phoneId],
                                           sPhoneNotifier,
@@ -755,6 +778,43 @@ public class PhoneFactory {
             mUiccController.setSvlteIndex(sActiveSvlteModeSlotId);
         }
         SvlteRoamingController.make(sLteDcPhoneProxys);
+    }
+
+    private static int calculateNetworkType(Context context, int phoneId) {
+        int networkMode = -1;
+        int capabilityPhoneId = Integer.valueOf(
+                        SystemProperties.get(PhoneConstants.PROPERTY_CAPABILITY_SWITCH, "1")) - 1;
+
+        if (!SvlteUtils.isValidPhoneId(phoneId)) {
+            Rlog.i(LOG_TAG, "calculateNetworkType error, phone id : " + phoneId);
+            return networkMode;
+        }
+
+        if (sActiveSvlteModeSlotId == phoneId) {
+            networkMode = RILConstants.NETWORK_MODE_CDMA;
+            return networkMode;
+        } else if (SvlteUtils.isValidateSlotId(phoneId)) {
+            if (phoneId == capabilityPhoneId) {
+                networkMode = calculatePreferredNetworkType(context);
+            } else {
+                networkMode = RILConstants.NETWORK_MODE_GSM_ONLY;
+            }
+            return networkMode;
+        }
+
+        phoneId = SvlteUtils.getSlotId(phoneId);
+
+        //handle second phone in svltepohoneproxy
+        if (sActiveSvlteModeSlotId != phoneId) {
+            networkMode = RILConstants.NETWORK_MODE_CDMA;
+        } else if (SvlteUtils.isValidateSlotId(phoneId)) {
+            if (phoneId == capabilityPhoneId) {
+                networkMode = calculatePreferredNetworkType(context);
+            } else {
+                networkMode = RILConstants.NETWORK_MODE_GSM_ONLY;
+            }
+        }
+        return networkMode;
     }
 
     public static IWorldPhone getWorldPhone() {

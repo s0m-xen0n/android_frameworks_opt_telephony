@@ -22,6 +22,7 @@ import android.content.Context;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
 import android.os.AsyncResult;
+import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
@@ -30,7 +31,11 @@ import android.os.SystemProperties;
 import android.text.TextUtils;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.Rlog;
+import android.telephony.ServiceState;
 import android.telephony.SignalStrength;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
+import android.view.Display;
 
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
@@ -42,10 +47,28 @@ import java.io.InputStream;
 import com.android.internal.telephony.RadioCapability;
 import com.android.internal.telephony.gsm.SsData;
 import com.android.internal.telephony.uicc.IccRecords;
+import com.android.internal.telephony.uicc.SpnOverride;
 import com.android.internal.telephony.uicc.UiccController;
 
+// import com.android.internal.telephony.uicc.SpnOverride;
+import com.mediatek.internal.telephony.FemtoCellInfo;
+import com.mediatek.internal.telephony.NetworkInfoWithAcT;
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
 import com.mediatek.internal.telephony.ltedc.svlte.MdIratInfo;
 import com.mediatek.internal.telephony.ltedc.svlte.MdIratInfo.IratType;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteModeController;
+import com.mediatek.internal.telephony.ltedc.svlte.SvlteUtils;
+import com.mediatek.internal.telephony.uicc.SvlteUiccUtils;
+
+//VoLTE
+import com.mediatek.internal.telephony.QosStatus;
+import com.mediatek.internal.telephony.TftStatus;
+import com.mediatek.internal.telephony.DedicateDataCallState;
+import com.mediatek.internal.telephony.PacketFilterInfo;
+import com.mediatek.internal.telephony.TftAuthToken;
+import com.mediatek.internal.telephony.PcscfInfo;
+import com.mediatek.internal.telephony.DefaultBearerConfig;
+import com.mediatek.internal.telephony.SrvccCallContext;
 
 public class MediaTekRIL extends RIL implements CommandsInterface {
 
@@ -55,6 +78,35 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
     /* ALPS00799783: for restore previous preferred network type when set type fail */
     private int mPreviousPreferredType = -1;
+
+    // MTK
+    private static final String  PROPERTY_RIL_CARD_TYPE_SET = "gsm.ril.cardtypeset";
+    private static final String  PROPERTY_RIL_CARD_TYPE_SET_2 = "gsm.ril.cardtypeset.2";
+    private static final String  PROPERTY_NET_CDMA_MDMSTAT = "net.cdma.mdmstat";
+    private static final int INITIAL_RETRY_INTERVAL_MSEC = 200;
+    private static final String  PROPERTY_CONFIG_EMDSTATUS_SEND = "ril.cdma.emdstatus.send";
+    /// M: C2K RILD socket name definition
+    static final String C2K_SOCKET_NAME_RIL = "rild-via";
+    private static final String[]  PROPERTY_RIL_FULL_UICC_TYPE = {
+        "gsm.ril.fulluicctype",
+        "gsm.ril.fulluicctype.2",
+        "gsm.ril.fulluicctype.3",
+        "gsm.ril.fulluicctype.4",
+    };
+    private static final int CARD_TYPE_SIM  = 1;
+    private static final int CARD_TYPE_USIM = 2;
+    private static final int CARD_TYPE_CSIM = 4;
+    private static final int CARD_TYPE_RUIM = 8;
+
+    private SpnOverride mSpnOverride;
+
+    // for modem config
+    private final Handler mHandler;
+
+    /**
+     * Receives and stores the capabilities supported by the modem.
+     */
+    private Handler mSupportedRafHandler;
 
     /* M: call control part start */
     /* DTMF request will be ignored when duplicated sending */
@@ -132,11 +184,31 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
     /* M: call control part end */
 
     public MediaTekRIL(Context context, int networkMode, int cdmaSubscription) {
-	    super(context, networkMode, cdmaSubscription, null);
+        this(context, networkMode, cdmaSubscription, null);
     }
 
     public MediaTekRIL(Context context, int networkMode, int cdmaSubscription, Integer instanceId) {
 	    super(context, networkMode, cdmaSubscription, instanceId);
+
+	    // xen0n: don't know why this can NPE, init in ctor instead. sigh
+	    riljLog("MediaTekRIL ctor!");
+	    mSupportedRafHandler = new Handler() {
+            @Override
+            public void handleMessage(Message msg) {
+                AsyncResult ar = (AsyncResult) msg.obj;
+                RadioCapability rc = (RadioCapability) ar.result;
+                if (ar.exception != null) {
+                    if (RILJ_LOGD) Rlog.e(RILJ_LOG_TAG, "Get supported radio access family fail" + (mInstanceId != null ? (" [SUB" + mInstanceId + "]") : ""), ar.exception);
+                } else {
+                    mSupportedRaf = rc.getRadioAccessFamily();
+                    if (RILJ_LOGD) riljLog("Supported radio access family=" + mSupportedRaf);
+                }
+            }
+        };
+
+        // and its friends
+        mSpnOverride = new SpnOverride();
+        mHandler = new Handler();
     }
 
     public static byte[] hexStringToBytes(String s) {
@@ -323,7 +395,6 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
     private Object responseSetupDedicateDataCall(Parcel p) {
         int number = p.readInt();
         if (RILJ_LOGD) riljLog("responseSetupDedicateDataCall number=" + number);
-        /*
         DedicateDataCallState[] dedicateDataCalls = new DedicateDataCallState[number];
         for (int i=0; i<number; i++) {
             DedicateDataCallState dedicateDataCall = new DedicateDataCallState();
@@ -341,17 +412,6 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             return dedicateDataCalls[0];
         else
             return null;
-        */
-        Rlog.e(RILJ_LOG_TAG, "responseSetupDedicateDataCall: stub!");
-
-        return null;
-    }
-
-    private Object
-    responseNetworkInfoWithActs(Parcel p) {
-        Rlog.e(RILJ_LOG_TAG, "responseNetworkInfoWithActs: stub!");
-
-        return null;
     }
 
     private Object
@@ -391,23 +451,32 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
     private Object
     responseModifyDataCall(Parcel p) {
-        Rlog.e(RILJ_LOG_TAG, "responseModifyDataCall: stub!");
-
         return null;
     }
 
     private Object
     responsePcscfDiscovery(Parcel p) {
-        Rlog.e(RILJ_LOG_TAG, "responsePcscfDiscovery: stub!");
-
-        return null;
+        PcscfInfo pcscfInfo = null;
+        String pcscfStr = p.readString();
+        if (!TextUtils.isEmpty(pcscfStr)) {
+            String[] pcscfArray = pcscfStr.split(" ");
+            if (pcscfArray != null && pcscfArray.length > 0)
+                pcscfInfo = new PcscfInfo(PcscfInfo.IMC_PCSCF_ACQUIRE_BY_PCO, pcscfArray);
+        }
+        return pcscfInfo;
     }
 
     private Object
     responseGetNitzTime(Parcel p) {
-        Rlog.e(RILJ_LOG_TAG, "responseGetNitzTime: stub!");
+        Object[] result = new Object[2];
+        String response;
 
-        return null;
+        response = p.readString();
+        long nitzReceiveTime = p.readLong();
+        result[0] = response;
+        result[1] = Long.valueOf(nitzReceiveTime);
+
+        return result;
     }
     
     private Object
@@ -516,16 +585,6 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         return ssData;
     }
 
-    private Object responseIratStateChange(Parcel p) {
-        MdIratInfo pdnIratInfo = new MdIratInfo();
-        pdnIratInfo.sourceRat = p.readInt();
-        pdnIratInfo.targetRat = p.readInt();
-        pdnIratInfo.action = p.readInt();
-        pdnIratInfo.type = IratType.getIratTypeFromInt(p.readInt());
-        riljLog("[C2K_IRAT_RIL]responseIratStateChange: pdnIratInfo = " + pdnIratInfo);
-        return pdnIratInfo;
-    }
-
     @Override
     public void setLocalCallHold(int lchStatus) {
         byte[] payload = new byte[]{(byte)(lchStatus & 0x7F)};
@@ -533,6 +592,18 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
         // sendOemRilRequestRaw(OEMHOOK_EVT_HOOK_SET_LOCAL_CALL_HOLD, 1, payload, null);
         Rlog.e(RILJ_LOG_TAG, "setLocalCallHold: stub!");
+    }
+
+    @Override
+    public void
+    getDataCallProfile(int appType, Message result) {
+        Rlog.d(RILJ_LOG_TAG, "getDataCallProfile: not supported on MTK!");
+        if (result != null) {
+            CommandException ex = new CommandException(
+                CommandException.Error.REQUEST_NOT_SUPPORTED);
+            AsyncResult.forMessage(result, null, ex);
+            result.sendToTarget();
+        }
     }
 
     @Override
@@ -1148,6 +1219,9 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         int response = p.readInt();
 
         switch(response) {
+            case RIL_UNSOL_RIL_CONNECTED: ret = responseInts(p); break;
+
+            // MTK cases
             case RIL_UNSOL_NEIGHBORING_CELL_INFO: ret = responseStrings(p); break;
             case RIL_UNSOL_NETWORK_INFO: ret = responseStrings(p); break;
             case RIL_UNSOL_RESPONSE_PS_NETWORK_STATE_CHANGED: ret =  responseVoid(p); break;
@@ -1307,6 +1381,42 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         int newResponseCode = 0;
 
         switch (response) {
+            case RIL_UNSOL_RIL_CONNECTED: {
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+
+                getRadioCapability(mSupportedRafHandler.obtainMessage());
+                // Set ecc list before MO call
+                if  (TelephonyManager.getDefault().getMultiSimConfiguration() == TelephonyManager.MultiSimVariants.DSDA
+                        || mInstanceId == 0) {
+                    setEccList();
+                }
+
+                // Initial conditions
+                //setRadioPower(false, null);
+                setPreferredNetworkType(mPreferredNetworkType, null);
+                setCdmaSubscriptionSource(mCdmaSubscription, null);
+                setCellInfoListRate(Integer.MAX_VALUE, null);
+                notifyRegistrantsRilConnectionChanged(((int[])ret)[0]);
+                //[ALPS01810775,ALPS01868743]-Start
+                //"isScreenOn" removed and replaced by mDefaultDisplayState
+                //sendScreenState(isScreenOn);
+                if (mDefaultDisplayState == Display.STATE_ON){
+                    sendScreenState(true);
+                } else if (mDefaultDisplayState == Display.STATE_OFF){
+                    sendScreenState(false);
+                } else {
+                    riljLog("not setScreenState mDefaultDisplayState="
+                            + mDefaultDisplayState);
+                }
+                //[ALPS01810775,ALPS01868743]-End
+
+                // SVLTE remote SIM Access
+                //if (CdmaFeatureOptionUtils.isCdmaLteDcSupport() && !CdmaFeatureOptionUtils.isC2KWorldPhoneP2Support()) {
+                //    configModemRemoteSimAccess();
+                //}
+                break;
+            }
+
             case RIL_UNSOL_NEIGHBORING_CELL_INFO:
                 if (RILJ_LOGD) unsljLogvRet(response, ret);
                 if (mNeighboringInfoRegistrants != null) {
@@ -1334,13 +1444,10 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
             case RIL_UNSOL_PHB_READY_NOTIFICATION:
                 if (RILJ_LOGD) unsljLogRet(response, ret);
-                Rlog.e(RILJ_LOG_TAG, "RIL_UNSOL_PHB_READY_NOTIFICATION: stub!");
-                /*
                 if (mPhbReadyRegistrants != null) {
                     mPhbReadyRegistrants.notifyRegistrants(
                                         new AsyncResult(null, ret, null));
                 }
-                */
                 break;
 
             case RIL_UNSOL_STK_EVDL_CALL:
@@ -1359,12 +1466,9 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 if (RILJ_LOGD) {
                     unsljLogvRet(response, ret);
                 }
-                Rlog.e(RILJ_LOG_TAG, "RIL_UNSOL_STK_CALL_CTRL: stub!");
-                /*
                 if (mStkCallCtrlRegistrant != null) {
                     mStkCallCtrlRegistrant.notifyRegistrant(new AsyncResult(null, ret, null));
                 }
-                */
                 break;
 
             case RIL_UNSOL_STK_SETUP_MENU_RESET:
@@ -1447,6 +1551,8 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 if (RILJ_LOGD) unsljLogvRet(response, ret);
                 if (mPlmnChangeNotificationRegistrant != null) {
                     mPlmnChangeNotificationRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                } else {
+                    mEcopsReturnValue = ret;
                 }
                 break;
 
@@ -1454,6 +1560,8 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 if (RILJ_LOGD) unsljLogvRet(response, ret);
                 if (mRegistrationSuspendedRegistrant != null) {
                     mRegistrationSuspendedRegistrant.notifyRegistrant(new AsyncResult(null, ret, null));
+                } else {
+                    mEmsrReturnValue = ret;
                 }
                 break;
 
@@ -1488,12 +1596,428 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                     .notifyRegistrants(new AsyncResult(null, null, null));
             break;
 
+            // MTK-START, SMS part
+            // SMS ready notification
             case RIL_UNSOL_SMS_READY_NOTIFICATION:
-                Rlog.e(RILJ_LOG_TAG, "RIL_UNSOL_SMS_READY_NOTIFICATION: stub!");
-                /*if (mGsmSmsRegistrant != null) {
-                    mGsmSmsRegistrant
-                        .notifyRegistrant();
-                }*/
+                if (RILJ_LOGD) unsljLog(response);
+
+                if (mSmsReadyRegistrants.size() != 0) {
+                    mSmsReadyRegistrants.notifyRegistrants();
+                } else {
+                    // Phone process is not ready and cache it then wait register to notify
+                    if (RILJ_LOGD) Rlog.d(RILJ_LOG_TAG, "Cache sms ready event");
+                    mIsSmsReady = true;
+                }
+                break;
+
+            // New SMS but phone storage is full
+            case RIL_UNSOL_ME_SMS_STORAGE_FULL:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mMeSmsFullRegistrant != null) {
+                    mMeSmsFullRegistrant.notifyRegistrant();
+                }
+                break;
+
+            // ETWS primary notification
+            case RIL_UNSOL_RESPONSE_ETWS_NOTIFICATION:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mEtwsNotificationRegistrant != null) {
+                    mEtwsNotificationRegistrant.notifyRegistrant(new AsyncResult(null, ret, null));
+                }
+                break;
+            // MTK-END, SMS part
+
+            case RIL_UNSOL_DATA_ALLOWED:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mDataAllowedRegistrants != null) {
+                    mDataAllowedRegistrants.notifyRegistrants(new AsyncResult(null, null, null));
+                }
+                break;
+
+            case RIL_UNSOL_IMS_REGISTRATION_INFO:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mImsRegistrationInfoRegistrants != null) {
+                    mImsRegistrationInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            //Remote SIM ME lock related APIs [Start]
+            case RIL_UNSOL_MELOCK_NOTIFICATION:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                if (mMelockRegistrants != null) {
+                    mMelockRegistrants.notifyRegistrants(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+            //Remote SIM ME lock related APIs [End]
+
+            case RIL_UNSOL_IMS_ENABLE_DONE:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mImsEnableRegistrants != null) {
+                    mImsEnableRegistrants.notifyRegistrants();
+                }
+                break;
+
+            case RIL_UNSOL_IMS_DISABLE_DONE:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mImsDisableRegistrants != null) {
+                    mImsDisableRegistrants.notifyRegistrants();
+                }
+                break;
+
+            case RIL_UNSOL_VOLTE_EPS_NETWORK_FEATURE_SUPPORT:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                if (mEpsNetworkFeatureSupportRegistrants != null) {
+                    mEpsNetworkFeatureSupportRegistrants.notifyRegistrants(
+                                        new AsyncResult (null, ret, null));
+                }
+                break;
+
+            /// M: IMS feature. @{
+            //For updating call ids for conference call after SRVCC is done.
+            case RIL_UNSOL_ECONF_SRVCC_INDICATION:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mEconfSrvccRegistrants != null) {
+                    mEconfSrvccRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            //For updating conference call merged/added result.
+            case RIL_UNSOL_ECONF_RESULT_INDICATION:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mEconfResultRegistrants != null) {
+                	 riljLog("Notify ECONF result");
+                	 String[] econfResult = (String[])ret;
+                	 riljLog("ECONF result = " + econfResult[3]);
+                	 mEconfResultRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            //For updating call mode and pau information.
+            case RIL_UNSOL_CALL_INFO_INDICATION :
+                if (RILJ_LOGD) unsljLog(response);
+                if (mCallInfoRegistrants != null) {
+                   mCallInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            /// @}
+
+            case RIL_UNSOL_VOLTE_EPS_NETWORK_FEATURE_INFO:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mEpsNetworkFeatureInfoRegistrants != null) {
+                   mEpsNetworkFeatureInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_SRVCC_HANDOVER_INFO_INDICATION:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mSrvccHandoverInfoIndicationRegistrants != null) {
+                    mSrvccHandoverInfoIndicationRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            // IMS
+            //VoLTE
+            case RIL_UNSOL_DEDICATE_BEARER_ACTIVATED:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                if(mDedicateBearerActivatedRegistrant != null) {
+                    mDedicateBearerActivatedRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_DEDICATE_BEARER_MODIFIED:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                if(mDedicateBearerModifiedRegistrant != null) {
+                    mDedicateBearerModifiedRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_DEDICATE_BEARER_DEACTIVATED:
+                if (RILJ_LOGD) unsljLogRet(response, ret);
+                if(mDedicateBearerDeactivatedRegistrant != null) {
+                    mDedicateBearerDeactivatedRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            //MTK-START for MD state change
+            case RIL_UNSOL_MD_STATE_CHANGE:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                break;
+            //MTK-END for MD state change
+
+            case RIL_UNSOL_MO_DATA_BARRING_INFO:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mMoDataBarringInfoRegistrants != null) {
+                    mMoDataBarringInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_SSAC_BARRING_INFO:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mSsacBarringInfoRegistrants != null) {
+                    mSsacBarringInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+
+            /// M: CC071: Add Customer proprietary-IMS RIL interface. @[
+            case RIL_UNSOL_EMERGENCY_BEARER_SUPPORT_NOTIFY:
+                if (RILJ_LOGD) unsljLog(response);
+                if (mEmergencyBearerSupportInfoRegistrants != null) {
+                    mEmergencyBearerSupportInfoRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            /// @}
+
+            // M: CC33 LTE.
+            case RIL_UNSOL_RAC_UPDATE:
+                if (RILJ_LOGD) unsljLog(response);
+                mRacUpdateRegistrants
+                    .notifyRegistrants(new AsyncResult(null, null, null));
+                break;
+            case RIL_UNSOL_REMOVE_RESTRICT_EUTRAN:
+                if (RILJ_LOGD) unsljLog(response);
+                mRemoveRestrictEutranRegistrants
+                    .notifyRegistrants(new AsyncResult(null, null, null));
+                break;
+            /* M: C2K part start */
+            case RIL_UNSOL_CDMA_CALL_ACCEPTED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mAcceptedRegistrant != null) {
+                    mAcceptedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_UTK_SESSION_END:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+
+                if (mUtkSessionEndRegistrant != null) {
+                    mUtkSessionEndRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_UTK_PROACTIVE_COMMAND:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mUtkProCmdRegistrant != null) {
+                    mUtkProCmdRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_UTK_EVENT_NOTIFY:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mUtkEventRegistrant != null) {
+                    mUtkEventRegistrant.notifyRegistrant(
+                                        new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_VIA_GPS_EVENT:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mViaGpsEvent != null) {
+                    mViaGpsEvent.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_VIA_NETWORK_TYPE_CHANGE:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mNetworkTypeChangedRegistrant != null) {
+                    mNetworkTypeChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_VIA_INVALID_SIM_DETECTED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mInvalidSimDetectedRegistrant != null) {
+                    mInvalidSimDetectedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            /* M: C2K part end*/
+            case RIL_UNSOL_ABNORMAL_EVENT:
+                if (RILJ_LOGD) unsljLogvRet(response, ret);
+                if (mAbnormalEventRegistrant != null) {
+                    mAbnormalEventRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_CDMA_CARD_TYPE:
+                if (RILJ_LOGD) {
+                    unsljLogvRet(response, ret);
+                }
+                if (mCdmaCardTypeRegistrants != null) {
+                    mCdmaCardTypeValue = ret;
+                    mCdmaCardTypeRegistrants.notifyRegistrants(new AsyncResult(null, ret, null));
+                }
+                break;
+            /// M:[C2K] for eng mode start
+            case RIL_UNSOL_ENG_MODE_NETWORK_INFO:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                if (mEngModeNetworkInfoRegistrant != null) {
+                    mEngModeNetworkInfoRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            /// M:[C2K] for eng mode end
+
+            /// M: [C2K][IR] Support SVLTE IR feature. @{
+            case RIL_UNSOL_CDMA_PLMN_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                String mccmnc = "";
+                if (ret != null && ret instanceof String[]) {
+                    String s[] = (String[]) ret;
+                    if (s.length >= 2) {
+                        mccmnc = s[0] + s[1];
+                    }
+                }
+                riljLog("mccmnc changed mccmnc=" + mccmnc);
+                mMccMncChangeRegistrants.notifyRegistrants(new AsyncResult(null, mccmnc, null));
+                break;
+            /// M: [C2K][IR] Support SVLTE IR feature. @}
+
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @{
+            case RIL_UNSOL_GMSS_RAT_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogvRet(response, ret);
+                }
+                int[] rat = (int[]) ret;
+                riljLog("Notify RIL_UNSOL_GMSS_RAT_CHANGED result rat = " + rat);
+                if (mGmssRatChangedRegistrant != null) {
+                    mGmssRatChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, rat, null));
+                }
+                break;
+            /// M: [C2K][IR][MD-IRAT] URC for GMSS RAT changed. @}
+
+            /// M: [C2K] for ps type changed. @{
+            case RIL_UNSOL_RESPONSE_DATA_NETWORK_TYPE_CHANGED:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+
+                if (mDataNetworkTypeChangedRegistrant != null) {
+                    mDataNetworkTypeChangedRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            /// @}
+            ///M: [C2K][MD IRAT] start @{
+            case RIL_UNSOL_INTER_3GPP_IRAT_STATE_CHANGE:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                mIratStateChangeRegistrant.notifyRegistrants(new AsyncResult(null, ret, null));
+                break;
+            /// @} [C2K][MD IRAT] end
+            // M: [C2K][AP IRAT] start.
+            case RIL_UNSOL_LTE_BG_SEARCH_STATUS:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mLteBgSearchStatusRegistrant != null) {
+                    mLteBgSearchStatusRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_LTE_EARFCN_INFO:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mLteEarfcnInfoRegistrant != null) {
+                    mLteEarfcnInfoRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            // M: [C2K][AP IRAT] end.
+            case RIL_UNSOL_IMSI_REFRESH_DONE:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mImsiRefreshDoneRegistrant != null) {
+                    mImsiRefreshDoneRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_CDMA_IMSI_READY:
+                if (RILJ_LOGD) {
+                    unsljLog(response);
+                }
+                if (mCdmaImsiReadyRegistrant != null) {
+                    mCdmaImsiReadyRegistrant.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            case RIL_UNSOL_EUSIM_READY:
+                if (RILJ_LOGD) {
+                    unsljLogRet(response, ret);
+                }
+                mIsEusimReady = true;
+                if (mEusimReady != null) {
+                    mEusimReady.notifyRegistrants(new AsyncResult(null, null, null));
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        if ((mInstanceId == 0) || (mInstanceId == 10)) {
+                            SystemProperties.set(PROPERTY_RIL_CARD_TYPE_SET, "1");
+                            riljLog("set gsm.ril.cardtypeset to 1");
+                        } else if((mInstanceId == 1) || (mInstanceId == 11)) {
+                            SystemProperties.set(PROPERTY_RIL_CARD_TYPE_SET_2, "1");
+                            riljLog("set gsm.ril.cardtypeset.2 to 1");
+                        } else {
+                            riljLog("not set cardtypeset mInstanceId=" + mInstanceId);
+                        }
+                    }
+                }
+                break;
+            /// M: For 3G VT only @{
+            case RIL_UNSOL_VT_STATUS_INFO:
+                if (RILJ_LOGD) unsljLogvRet(response, ret);
+                if (mVtStatusInfoRegistrants != null) {
+                    mVtStatusInfoRegistrants.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+
+            case RIL_UNSOL_VT_RING_INFO:
+                if (RILJ_LOGD) unsljLogvRet(response, ret);
+                if (mVtRingRegistrants != null) {
+                    mVtRingRegistrants.notifyRegistrants(
+                            new AsyncResult(null, ret, null));
+                }
+                break;
+            /// @}
+            // M: Notify RILJ that call fade happened
+            case RIL_UNSOL_CDMA_SIGNAL_FADE:
+                if (RILJ_LOGD) {
+                    unsljLogvRet(response, ret);
+                }
+                if (mCdmaSignalFadeRegistrant != null) {
+                    mCdmaSignalFadeRegistrant.notifyRegistrant(
+                        new AsyncResult(null, ret, null));
+                }
+                break;
+            // M: Notify RILJ that the AT+EFNM was received
+            case RIL_UNSOL_CDMA_TONE_SIGNALS:
+                if (RILJ_LOGD) {
+                unsljLogvRet(response, ret);
+                }
+                if (mCdmaToneSignalsRegistrant != null) {
+                    mCdmaToneSignalsRegistrant.notifyRegistrant(
+                        new AsyncResult(null, ret, null));
+                }
                 break;
 
             default:
@@ -2233,24 +2757,36 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 	}
     }
 
-    /* Oh well... this broke non-dual-SIM phones including MX4 :-/
-    @Override
-    public void
-    setRadioPower(boolean on, Message result) {
-	if ((mInstanceId != null && mInstanceId == 1)) {
-		riljLog("SetRadioPower: on/off ignored on SIM2");
-		return;
-	}
+    public void setEccServiceCategory(int serviceCategory) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_ECC_SERVICE_CATEGORY, null);
 
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_DUAL_SIM_MODE_SWITCH, result);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(serviceCategory);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+            + " " + serviceCategory);
+
+        send(rr);
+    }
+
+    private void setEccList() {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_ECC_LIST, null);
+        ArrayList<PhoneNumberUtils.EccEntry> eccList = PhoneNumberUtils.getEccList();
+
+        rr.mParcel.writeInt(eccList.size() * 3);
+        for (PhoneNumberUtils.EccEntry entry : eccList) {
+            rr.mParcel.writeString(entry.getEcc());
+            rr.mParcel.writeString(entry.getCategory());
+            String strCondition = entry.getCondition();
+            if (strCondition.equals(PhoneNumberUtils.EccEntry.ECC_FOR_MMI))
+                strCondition = PhoneNumberUtils.EccEntry.ECC_NO_SIM;
+            rr.mParcel.writeString(strCondition);
+        }
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
 
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(on ? 3 : -1); // SIM1 | SIM2 ?
         send(rr);
     }
-    */
 
     @Override
     public void setUiccSubscription(int slotId, int appIndex, int subId,
@@ -2332,6 +2868,1298 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         send(rr);
     }
 
+    @Override
+    public void setRadioCapability(RadioCapability rc, Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RIL_REQUEST_SET_RADIO_CAPABILITY, response);
+
+        rr.mParcel.writeInt(rc.getVersion());
+        rr.mParcel.writeInt(rc.getSession());
+        rr.mParcel.writeInt(rc.getPhase());
+        rr.mParcel.writeInt(rc.getRadioAccessFamily());
+        rr.mParcel.writeString(rc.getLogicalModemUuid());
+        rr.mParcel.writeInt(rc.getStatus());
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + rc.toString());
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void getRadioCapability(Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RIL_REQUEST_GET_RADIO_CAPABILITY, response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        send(rr);
+    }
+
+    @Override
+    public void connectRilSocket() {
+        if (RILJ_LOGD) {
+            riljLog("[RIL SWITCH]reconnectRilSocket()");
+        }
+        if (mReceiverThread == null && mReceiver == null) {
+            connectRild();
+        } else {
+            if (RILJ_LOGD) {
+                riljLog("[RIL SWITCH] Already connected, abort connect request.");
+            }
+        }
+    }
+
+    @Override
+    public void disconnectRilSocket() {
+        if (RILJ_LOGD) {
+            riljLog("[RIL SWITCH]disconnectRilSocket()");
+        }
+        if (mSenderThread != null) {
+            mSenderThread.getLooper().quit();
+            mSenderThread = null;
+        }
+        if (mReceiver != null) {
+            ((MTKRILReceiver) mReceiver).mStoped = true;
+        }
+
+        try {
+            if (mSocket != null) {
+                mSocket.shutdownInput();
+            }
+            if (mReceiverThread != null) {
+                while (mReceiverThread.isAlive()) {
+                    riljLog("[RIL SWITCH]mReceiverThread.isAlive() = true;");
+                    Thread.sleep(500);
+                }
+            }
+            mReceiverThread = null;
+            mReceiver = null;
+            // Set mRilVersion to -1, it will not notifyRegistrant in registerForRilConnected.
+            mRilVersion = -1;
+        } catch (IOException ex) {
+            if (RILJ_LOGD) {
+                riljLog("[RIL SWITCH]IOException ex = " + ex);
+            }
+        } catch (InterruptedException er) {
+            if (RILJ_LOGD) {
+                riljLog("[RIL SWITCH]InterruptedException er = " + er);
+            }
+        }
+    }
+
+    /* M: SS part */
+    public void
+    changeBarringPassword(String facility, String oldPwd, String newPwd,
+        String newCfm, Message result) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_CHANGE_BARRING_PASSWORD, result, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CHANGE_BARRING_PASSWORD, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        rr.mParcel.writeInt(4);
+        rr.mParcel.writeString(facility);
+        rr.mParcel.writeString(oldPwd);
+        rr.mParcel.writeString(newPwd);
+        rr.mParcel.writeString(newCfm);
+        send(rr);
+    }
+
+    public void setCLIP(boolean enable, Message result) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_CLIP, result, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_CLIP, result);
+
+        // count ints
+        rr.mParcel.writeInt(1);
+
+        if (enable) {
+            rr.mParcel.writeInt(1);
+        } else {
+            rr.mParcel.writeInt(0);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + enable);
+
+        send(rr);
+    }
+    /* M: SS part end */
+
+    /* M: Network part start */
+    public String lookupOperatorNameFromNetwork(long subId, String numeric, boolean desireLongName) {
+        int phoneId = SubscriptionManager.getPhoneId((int) subId);
+        String nitzOperatorNumeric = null;
+        String nitzOperatorName = null;
+
+        nitzOperatorNumeric = TelephonyManager.getTelephonyProperty(phoneId, TelephonyProperties.PROPERTY_NITZ_OPER_CODE, "");
+        if ((numeric != null) && (numeric.equals(nitzOperatorNumeric))) {
+            if (desireLongName == true) {
+                nitzOperatorName = TelephonyManager.getTelephonyProperty(phoneId, TelephonyProperties.PROPERTY_NITZ_OPER_LNAME, "");
+            } else {
+                nitzOperatorName = TelephonyManager.getTelephonyProperty(phoneId, TelephonyProperties.PROPERTY_NITZ_OPER_SNAME, "");
+            }
+        }
+
+        /* ALPS00273663 handle UCS2 format name : prefix + hex string ex: "uCs2806F767C79D1" */
+        if ((nitzOperatorName != null) && (nitzOperatorName.startsWith("uCs2") == true))
+        {
+            riljLog("lookupOperatorNameFromNetwork handling UCS2 format name");
+            try {
+                nitzOperatorName = new String(IccUtils.hexStringToBytes(nitzOperatorName.substring(4)), "UTF-16");
+            } catch (UnsupportedEncodingException ex) {
+                riljLog("lookupOperatorNameFromNetwork UnsupportedEncodingException");
+            }
+        }
+
+        riljLog("lookupOperatorNameFromNetwork numeric= " + numeric + ",subId= " + subId + ",nitzOperatorNumeric= " + nitzOperatorNumeric + ",nitzOperatorName= " + nitzOperatorName);
+
+        return nitzOperatorName;
+    }
+
+    @Override
+    public void
+    setNetworkSelectionModeManualWithAct(String operatorNumeric, String act, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SET_NETWORK_SELECTION_MANUAL_WITH_ACT,
+                                    response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + operatorNumeric + "" + act);
+
+        rr.mParcel.writeInt(3);
+        rr.mParcel.writeString(operatorNumeric);
+        rr.mParcel.writeString(act);
+        rr.mParcel.writeString("0"); //the 3rd parameter is for MTK RIL to identify it shall be processed as semi auto network selection mode or not
+
+        send(rr);
+    }
+
+    private Object
+    responseNetworkInfoWithActs(Parcel p) {
+        String strings[] = (String []) responseStrings(p);
+        ArrayList<NetworkInfoWithAcT> ret;
+
+        // MTK TODO: duplication on top of duplication... refactor this later (sigh)
+        // SpnOverride spnOverride = new SpnOverride();
+
+        if (strings.length % 4 != 0) {
+            throw new RuntimeException(
+                "RIL_REQUEST_GET_POL_LIST: invalid response. Got "
+                + strings.length + " strings, expected multible of 5");
+        }
+
+        ret = new ArrayList<NetworkInfoWithAcT>(strings.length / 4);
+
+        String strOperName = null;
+        String strOperNumeric = null;
+        int nAct = 0;
+        int nIndex = 0;
+
+        for (int i = 0 ; i < strings.length ; i += 4) {
+            strOperName = null;
+            strOperNumeric = null;
+            if (strings[i] != null) {
+                nIndex = Integer.parseInt(strings[i]);
+            } else {
+                Rlog.d(RILJ_LOG_TAG, "responseNetworkInfoWithActs: no invalid index. i is " + i);
+            }
+
+            if (strings[i + 1] != null) {
+                int format = Integer.parseInt(strings[i + 1]);
+                switch (format) {
+                    case 0:
+                    case 1:
+                        strOperName = strings[i + 2];
+                        break;
+                    case 2:
+                        if (strings[i + 2] != null) {
+                            // xen0n: use CM SpnOverride impl
+                            final String operNumeric = strings[i + 2];
+                            strOperNumeric = operNumeric;
+                            if (mSpnOverride.containsCarrier(operNumeric)) {
+                                strOperName = mSpnOverride.getSpn(operNumeric);
+                            }
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            if (strings[i + 3] != null) {
+                nAct = Integer.parseInt(strings[i + 3]);
+            } else {
+                Rlog.d(RILJ_LOG_TAG, "responseNetworkInfoWithActs: no invalid Act. i is " + i);
+            }
+            if (strOperNumeric != null && !strOperNumeric.equals("?????")) {
+                ret.add(
+                    new NetworkInfoWithAcT(
+                        strOperName,
+                        strOperNumeric,
+                        nAct,
+                        nIndex));
+            } else {
+                Rlog.d(RILJ_LOG_TAG, "responseNetworkInfoWithActs: invalid oper. i is " + i);
+            }
+        }
+
+        return ret;
+    }
+
+    public void
+    setNetworkSelectionModeSemiAutomatic(String operatorNumeric, String act, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SET_NETWORK_SELECTION_MANUAL_WITH_ACT,
+                                    response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + operatorNumeric + "" + act);
+
+        rr.mParcel.writeInt(3);
+        rr.mParcel.writeString(operatorNumeric);
+        rr.mParcel.writeString(act);
+        rr.mParcel.writeString("1"); //the 3rd parameter is for MTK RIL to identify it shall be processed as semi auto network selection mode
+
+        send(rr);
+    }
+
+    public void getPOLCapabilty(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_POL_CAPABILITY, response);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void getCurrentPOLList(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_POL_LIST, response);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void setPOLEntry(int index, String numeric, int nAct, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_POL_ENTRY, response);
+        if (numeric == null || (numeric.length() == 0)) {
+            rr.mParcel.writeInt(1);
+            rr.mParcel.writeString(Integer.toString(index));
+        } else {
+            rr.mParcel.writeInt(3);
+            rr.mParcel.writeString(Integer.toString(index));
+            rr.mParcel.writeString(numeric);
+            rr.mParcel.writeString(Integer.toString(nAct));
+        }
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    // Femtocell (CSG) feature START
+    public void getFemtoCellList(String operatorNumeric, int rat, Message response) {
+        RILRequest rr
+        = RILRequest.obtain(RIL_REQUEST_GET_FEMTOCELL_LIST,
+                                    response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeString(operatorNumeric);
+        rr.mParcel.writeString(Integer.toString(rat));
+        send(rr);
+    }
+
+    public void abortFemtoCellList(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_ABORT_FEMTOCELL_LIST, response);
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void selectFemtoCell(FemtoCellInfo femtocell, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SELECT_FEMTOCELL,
+                                    response);
+        int act = femtocell.getCsgRat();
+
+        if (act == ServiceState.RIL_RADIO_TECHNOLOGY_LTE) {
+            act = 7;
+        } else if (act == ServiceState.RIL_RADIO_TECHNOLOGY_UMTS) {
+            act = 2;
+        } else {
+            act = 0;
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " csgId=" + femtocell.getCsgId() + " plmn=" + femtocell.getOperatorNumeric() + " rat=" + femtocell.getCsgRat() + " act=" + act);
+
+        rr.mParcel.writeInt(3);
+        rr.mParcel.writeString(femtocell.getOperatorNumeric());
+        rr.mParcel.writeString(Integer.toString(act));
+        rr.mParcel.writeString(Integer.toString(femtocell.getCsgId()));
+
+        send(rr);
+    }
+    // Femtocell (CSG) feature END
+
+    // M: CC33 LTE.
+    @Override
+    public void
+    setDataOnToMD(boolean enable, Message result) {
+        //AT+EDSS = <on/off>
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_DATA_ON_TO_MD, result);
+        int type = enable ? 1 : 0;
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(type);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> "
+                                + requestToString(rr.mRequest) + ": " + type);
+        send(rr);
+    }
+
+    @Override
+    public void
+    setRemoveRestrictEutranMode(boolean enable, Message result) {
+        //AT+ECODE33 = <on/off>
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_REMOVE_RESTRICT_EUTRAN_MODE, result);
+        int type = enable ? 1 : 0;
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(type);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> "
+                                + requestToString(rr.mRequest) + ": " + type);
+        send(rr);
+    }
+
+    public boolean isGettingAvailableNetworks() {
+        synchronized (mRequestList) {
+            for (int i = 0, s = mRequestList.size() ; i < s ; i++) {
+                RILRequest rr = mRequestList.valueAt(i);
+                if (rr != null &&
+                    (rr.mRequest == RIL_REQUEST_QUERY_AVAILABLE_NETWORKS ||
+                     rr.mRequest == RIL_REQUEST_QUERY_AVAILABLE_NETWORKS_WITH_ACT)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /* M: Network part end */
+    // IMS
+    public void setIMSEnabled(boolean enable, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_IMS_ENABLE, response);
+
+        rr.mParcel.writeInt(1);
+        if (enable) {
+            rr.mParcel.writeInt(1);
+        } else {
+            rr.mParcel.writeInt(0);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+    // VOLTE
+    public void setupDedicateDataCall(int ddcId, int interfaceId, boolean signalingFlag, QosStatus qosStatus, TftStatus tftStatus, Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_SETUP_DEDICATE_DATA_CALL, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SETUP_DEDICATE_DATA_CALL, response);
+
+        rr.mParcel.writeInt(7);
+        rr.mParcel.writeInt(ddcId);
+        rr.mParcel.writeInt(interfaceId);
+        rr.mParcel.writeInt(signalingFlag ? 1 : 0);
+        if (qosStatus == null) {
+            rr.mParcel.writeInt(0);
+        } else {
+            rr.mParcel.writeInt(1);
+            qosStatus.writeTo(rr.mParcel);
+        }
+
+        if (tftStatus == null) {
+            rr.mParcel.writeInt(0);
+        } else {
+            rr.mParcel.writeInt(1);
+            tftStatus.writeTo(rr.mParcel);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> "
+                + requestToString(rr.mRequest) + " interfaceId=" + interfaceId + " signalingFlag="
+                + signalingFlag);
+
+        send(rr);
+    }
+
+    public void deactivateDedicateDataCall(int cid, String reason, Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_DEACTIVATE_DEDICATE_DATA_CALL, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_DEACTIVATE_DEDICATE_DATA_CALL, response);
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeString(Integer.toString(cid));
+        rr.mParcel.writeString(reason);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " +
+                requestToString(rr.mRequest) + " " + cid + " " + reason);
+
+        send(rr);
+    }
+
+    public void modifyDataCall(int cid, QosStatus qosStatus, TftStatus tftStatus, Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_MODIFY_DATA_CALL, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_MODIFY_DATA_CALL, response);
+        rr.mParcel.writeInt(7);
+        rr.mParcel.writeInt(cid);
+        if (qosStatus == null) {
+            rr.mParcel.writeInt(0);
+        } else {
+            rr.mParcel.writeInt(1);
+            qosStatus.writeTo(rr.mParcel);
+        }
+
+        if (tftStatus == null) {
+            rr.mParcel.writeInt(0);
+        } else {
+            rr.mParcel.writeInt(1);
+            tftStatus.writeTo(rr.mParcel);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void abortSetupDataCall(int ddcId, String reason, Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_ABORT_SETUP_DATA_CALL, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_ABORT_SETUP_DATA_CALL, response);
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeString(Integer.toString(ddcId));
+        rr.mParcel.writeString(reason);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + ddcId + " " + reason);
+        send(rr);
+    }
+
+    public void pcscfDiscoveryPco(int cid, Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_PCSCF_DISCOVERY_PCO, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_PCSCF_DISCOVERY_PCO, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(cid);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    public void clearDataBearer(Message response) {
+        //RILRequest rr = RILRequest.obtain(RIL_REQUEST_CLEAR_DATA_BEARER, response, mySimId);
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CLEAR_DATA_BEARER, response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+    // M: Fast Dormancy
+    public void setScri(boolean forceRelease, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_SCRI, response);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(forceRelease ? 1 : 0);
+
+        send(rr);
+
+    }
+
+    //[New R8 modem FD]
+    public void setFDMode(int mode, int parameter1, int parameter2, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_FD_MODE, response);
+
+        //AT+EFD=<mode>[,<param1>[,<param2>]]
+        //mode=0:disable modem Fast Dormancy; mode=1:enable modem Fast Dormancy
+        //mode=3:inform modem the screen status; parameter1: screen on or off
+        //mode=2:Fast Dormancy inactivity timer; parameter1:timer_id; parameter2:timer_value
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+
+        if (mode == 0 || mode == 1) {
+            rr.mParcel.writeInt(1);
+            rr.mParcel.writeInt(mode);
+        } else if (mode == 3) {
+            rr.mParcel.writeInt(2);
+            rr.mParcel.writeInt(mode);
+            rr.mParcel.writeInt(parameter1);
+        } else if (mode == 2) {
+            rr.mParcel.writeInt(3);
+            rr.mParcel.writeInt(mode);
+            rr.mParcel.writeInt(parameter1);
+            rr.mParcel.writeInt(parameter2);
+        }
+
+        send(rr);
+
+    }
+
+    // @argument:
+    // enable: yes   -> data centric
+    //         false -> voice centric
+    public void setDataCentric(boolean enable, Message response) {
+    	if (RILJ_LOGD) riljLog("setDataCentric");
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_DATA_CENTRIC, response);
+
+        rr.mParcel.writeInt(1);
+        if(enable) {
+            rr.mParcel.writeInt(1);
+        } else {
+            rr.mParcel.writeInt(0);
+        }
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        send(rr);
+    }
+
+
+    /// M: CC010: Add RIL interface @{
+    /**
+     * Notify modem about IMS call status.
+     * @param existed True if there is at least one IMS call existed, else return false.
+     * @param response User-defined message code.
+     */
+    @Override
+    public void setImsCallStatus (boolean existed, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_IMS_CALL_STATUS, null);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(existed ? 1 : 0);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+    /// @}
+
+    /// M: CC072: Add Customer proprietary-IMS RIL interface. @{
+    /**
+     * Transfer IMS call to CS modem.
+     *
+     * @param numberOfCall The number of call
+     * @param callList IMS call context
+     */
+     @Override
+     public void setSrvccCallContextTransfer(int numberOfCall, SrvccCallContext[] callList) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_SRVCC_CALL_CONTEXT_TRANSFER, null);
+
+        if ((numberOfCall <= 0) || (callList == null)) {
+              return;
+        }
+
+        rr.mParcel.writeInt(numberOfCall * 9 + 1);
+        rr.mParcel.writeString(Integer.toString(numberOfCall));
+        for (int i = 0; i < numberOfCall; i++) {
+            rr.mParcel.writeString(Integer.toString(callList[i].getCallId()));
+            rr.mParcel.writeString(Integer.toString(callList[i].getCallMode()));
+            rr.mParcel.writeString(Integer.toString(callList[i].getCallDirection()));
+            rr.mParcel.writeString(Integer.toString(callList[i].getCallState()));
+            rr.mParcel.writeString(Integer.toString(callList[i].getEccCategory()));
+            rr.mParcel.writeString(Integer.toString(callList[i].getNumberType()));
+            rr.mParcel.writeString(callList[i].getNumber());
+            rr.mParcel.writeString(callList[i].getName());
+            rr.mParcel.writeString(Integer.toString(callList[i].getCliValidity()));
+        }
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+     }
+
+     /**
+     * Update IMS registration status to modem.
+     *
+     * @param regState IMS registration state
+     *                 0: IMS unregistered
+     *                 1: IMS registered
+     * @param regType  IMS registration type
+     *                 0: Normal IMS registration
+     *                 1: Emergency IMS registration
+     * @param reason   The reason of state transition from registered to unregistered
+     *                 0: Unspecified
+     *                 1: Power off
+     *                 2: RF off
+     */
+     public void updateImsRegistrationStatus(int regState, int regType, int reason) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_UPDATE_IMS_REGISTRATION_STATUS, null);
+
+        rr.mParcel.writeInt(3);
+        rr.mParcel.writeInt(regState);
+        rr.mParcel.writeInt(regType);
+        rr.mParcel.writeInt(reason);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+     }
+     /// @}
+
+    /* M: C2K part start */
+    @Override
+    public void setViaTRM(int mode, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_VIA_TRM, null);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(mode);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void getNitzTime(Message result) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_GET_NITZ_TIME, result);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void requestSwitchHPF(boolean enableHPF, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SWITCH_HPF, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + enableHPF);
+        }
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(enableHPF ? 1 : 0);
+
+        send(rr);
+    }
+
+    @Override
+    public void setAvoidSYS(boolean avoidSYS, Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_SET_AVOID_SYS, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + avoidSYS);
+        }
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(avoidSYS ? 1 : 0);
+
+        send(rr);
+    }
+
+    @Override
+    public void getAvoidSYSList(Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_QUERY_AVOID_SYS, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void queryCDMANetworkInfo(Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_QUERY_CDMA_NETWORK_INFO, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void setOplmn(String oplmnInfo, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SEND_OPLMN, response);
+        rr.mParcel.writeString(oplmnInfo);
+        riljLog("sendOplmn, OPLMN is" + oplmnInfo);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void getOplmnVersion(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_OPLMN_VERSION, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void requestAGPSTcpConnected(int connected, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_TCP_CONNIND, result);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(connected);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + connected);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void requestAGPSSetMpcIpPort(String ip, String port, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_SET_MPC_IPPORT, result);
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeString(ip);
+        rr.mParcel.writeString(port);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " : " + ip + ", " + port);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void requestAGPSGetMpcIpPort(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_AGPS_GET_MPC_IPPORT, result);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void requestSetEtsDev(int dev, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_ETS_DEV, result);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(dev);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + dev);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void setArsiReportThreshold(int threshold, Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RILConstants.RIL_REQUEST_SET_ARSI_THRESHOLD, response);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(threshold);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " : " + threshold);
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void queryCDMASmsAndPBStatus(Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_QUERY_SMS_AND_PHONEBOOK_STATUS, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void queryCDMANetWorkRegistrationState(Message response) {
+        RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_QUERY_NETWORK_REGISTRATION, response);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void setMeid(String meid, Message response) {
+        RILRequest rr
+               = RILRequest.obtain(RIL_REQUEST_SET_MEID, response);
+
+       rr.mParcel.writeString(meid);
+       if (RILJ_LOGD) {
+           riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + meid);
+       }
+
+       send(rr);
+   }
+
+    @Override
+    public void setMdnNumber(String mdn, Message response) {
+         RILRequest rr
+                = RILRequest.obtain(RIL_REQUEST_WRITE_MDN, response);
+
+        rr.mParcel.writeString(mdn);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + ": " + mdn);
+        }
+
+        send(rr);
+    }
+
+    /// M: UTK started @{
+    @Override
+    public void getUtkLocalInfo(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_GET_LOCAL_INFO, result);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void requestUtkRefresh(int refreshType, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_UTK_REFRESH, result);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(refreshType);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void reportUtkServiceIsRunning(Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_REPORT_STK_SERVICE_IS_RUNNING, result);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void profileDownload(String profile, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_STK_SET_PROFILE, response);
+
+        rr.mParcel.writeString(profile);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+        RILRequest rr = RILRequest.obtain(
+            RILConstants.RIL_REQUEST_STK_HANDLE_CALL_SETUP_REQUESTED_FROM_SIM,
+            response);
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(accept ? 1 : 0);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + (accept ? 1 : 0));
+        }
+
+        send(rr);
+    }
+    /// UTK end @}
+
+    ///M: [C2K][SVLTE] Removt SIM access feature @{
+    @Override
+    public void configModemStatus(int modemStatus, int remoteSimProtocol, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CONFIG_MODEM_STATUS, result);
+
+        // count ints
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeInt(modemStatus);
+        rr.mParcel.writeInt(remoteSimProtocol);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + modemStatus + ", " + remoteSimProtocol);
+        }
+
+        send(rr);
+    }
+    /// @}
+
+    /// M: [C2K][SVLTE] C2K SVLTE CDMA RAT control @{
+    @Override
+    public void configIratMode(int iratMode, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CONFIG_IRAT_MODE, result);
+
+        // count ints
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(iratMode);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + iratMode + ", " + iratMode);
+        }
+
+        send(rr);
+    }
+    /// @}
+
+    /// M: [C2K][SVLTE] C2K SVLTE CDMA eHPRD control @{
+    @Override
+    public void configEvdoMode(int evdoMode, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_CONFIG_EVDO_MODE, result);
+
+        // count ints
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(evdoMode);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " " + evdoMode);
+        }
+
+        send(rr);
+    }
+    /// @}
+
+    ///M: [C2K][IRAT] code start @{
+    @Override
+    public void confirmIratChange(int apDecision, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_CONFIRM_INTER_3GPP_IRAT_CHANGE,
+                response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(apDecision);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + apDecision);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void requestSetPsActiveSlot(int psSlot, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_ACTIVE_PS_SLOT, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(psSlot);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + psSlot);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void syncNotifyDataCallList(AsyncResult dcList) {
+        riljLog("[C2K_IRAT_RIL] notify data call list!");
+        mDataNetworkStateRegistrants.notifyRegistrants(dcList);
+    }
+
+    @Override
+    public void requestDeactivateLinkDownPdn(Message response) {
+        RILRequest rr = RILRequest.obtain(
+                RILConstants.RIL_REQUEST_DEACTIVATE_LINK_DOWN_PDN, response);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    private Object responseIratStateChange(Parcel p) {
+        MdIratInfo pdnIratInfo = new MdIratInfo();
+        pdnIratInfo.sourceRat = p.readInt();
+        pdnIratInfo.targetRat = p.readInt();
+        pdnIratInfo.action = p.readInt();
+        pdnIratInfo.type = IratType.getIratTypeFromInt(p.readInt());
+        riljLog("[C2K_IRAT_RIL]responseIratStateChange: pdnIratInfo = " + pdnIratInfo);
+        return pdnIratInfo;
+    }
+    ///@} [C2K] IRAT code end
+
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @{
+    @Override
+    public void setSvlteRatMode(int radioTechMode, int preSvlteMode, int svlteMode,
+            int preRoamingMode, int roamingMode, boolean is3GDualModeCard, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_SVLTE_RAT_MODE, response);
+        rr.mParcel.writeInt(6);
+        rr.mParcel.writeInt(radioTechMode);
+        rr.mParcel.writeInt(preSvlteMode);
+        rr.mParcel.writeInt(svlteMode);
+        rr.mParcel.writeInt(preRoamingMode);
+        rr.mParcel.writeInt(roamingMode);
+        rr.mParcel.writeInt(is3GDualModeCard ? 1 : 0);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " radioTechMode: " + radioTechMode
+                    + " preSvlteMode: " + preSvlteMode + " svlteMode: " + svlteMode
+                    + " preRoamingMode: " + preRoamingMode + " roamingMode: " + roamingMode
+                    + " is3GDualModeCard: " + is3GDualModeCard);
+        }
+        send(rr);
+    }
+    /// M: [C2K][SVLTE] Set the SVLTE RAT mode. @}
+
+    /// M: [C2K][SVLTE] Set the STK UTK mode. @}
+    @Override
+    public void setStkUtkMode(int stkUtkMode, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_STK_UTK_MODE, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(stkUtkMode);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " stkUtkMode: " + stkUtkMode);
+        }
+        send(rr);
+    }
+    /// M: [C2K][SVLTE] Set the STK UTK mode. @}
+
+    /// M: [C2K][SVLTE] Update RIL instance id for SVLTE switch ActivePhone. @{
+    @Override
+    public void setInstanceId(int instanceId) {
+        mInstanceId = instanceId;
+    }
+    /// @}
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @{
+
+    @Override
+    public void setRegistrationSuspendEnabled(int enabled, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_REG_SUSPEND_ENABLED, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(enabled);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void setResumeRegistration(int sessionId, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RESUME_REGISTRATION, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(sessionId);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    @Override
+    public void setCdmaRegistrationSuspendEnabled(boolean enabled, Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_REG_SUSPEND_ENABLED_CDMA, response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(enabled ? 1 : 0);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " enable=" + enabled);
+        }
+        send(rr);
+    }
+
+    @Override
+    public void setResumeCdmaRegistration(Message response) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_RESUME_REGISTRATION_CDMA, response);
+        mVoiceNetworkStateRegistrants.notifyRegistrants(new AsyncResult(null, null, null));
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
+        }
+        send(rr);
+    }
+
+    /// M: [C2K][IR] Support SVLTE IR feature. @}
+
+    /* M: C2K part end */
+
+    //[ALPS01810775,ALPS01868743]-Start
+    public int getDisplayState(){
+        return mDefaultDisplayState;
+    }
+    //[ALPS01810775,ALPS01868743]-End
+
+    // M: [C2K] AP IRAT start.
+    @Override
+    public void requestTriggerLteBgSearch(int numOfArfcn, int[] arfcn, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_TRIGGER_LTE_BG_SEARCH,
+                response);
+        int len = arfcn.length;
+        rr.mParcel.writeInt(len + 1);
+        rr.mParcel.writeInt(numOfArfcn);
+        for (int i = 0; i < len; i++) {
+            rr.mParcel.writeInt(arfcn[i]);
+        }
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " length of arfcn" + len);
+        }
+
+        send(rr);
+    }
+
+    @Override
+    public void requestSetLteEarfcnEnabled(boolean enable, Message response) {
+        RILRequest rr = RILRequest.obtain(RILConstants.RIL_REQUEST_SET_LTE_EARFCN_ENABLED,
+                response);
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(enable ? 1 : 0);
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
+                    + " enable = " + enable);
+        }
+
+        send(rr);
+    }
+    // M: [C2K] AP IRAT end.
+
+    // M: [C2K] SVLTE Remote SIM Access start.
+    private int getFullCardType(int slot) {
+        String cardType;
+        if (slot == 0) {
+            Rlog.d(RILJ_LOG_TAG, "getFullCardType slot0");
+            cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[0]);
+        } else if (slot == 1) {
+            Rlog.d(RILJ_LOG_TAG, "getFullCardType slot1");
+            cardType = SystemProperties.get(PROPERTY_RIL_FULL_UICC_TYPE[1]);
+        } else {
+            Rlog.d(RILJ_LOG_TAG, "getFullCardType invalid slotId = " + slot);
+            return 0;
+        }
+        
+        Rlog.d(RILJ_LOG_TAG, "getFullCardType=" + cardType);
+        String appType[] = cardType.split(",");
+        int fullType = 0;
+        for (int i = 0; i < appType.length; i++) {
+            if ("USIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_USIM;
+            } else if ("SIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_SIM;
+            } else if ("CSIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_CSIM;
+            } else if ("RUIM".equals(appType[i])) {
+                fullType = fullType | CARD_TYPE_RUIM;
+            }
+        }
+        Rlog.d(RILJ_LOG_TAG, "fullType=" + fullType);
+        return fullType;
+    }
+
+    private class ConfigModemRunnable implements Runnable {
+        public  ConfigModemRunnable() {
+        }
+
+        @Override
+        public void run() {
+            configModemRemoteSimAccess();
+        }
+    }
+    ConfigModemRunnable configModemRunnable = new ConfigModemRunnable();
+
+    private void configModemRemoteSimAccess() {
+        String cardTypeSet = SystemProperties.get(PROPERTY_RIL_CARD_TYPE_SET, "0");
+        String cardTypeSet_2 = SystemProperties.get(PROPERTY_RIL_CARD_TYPE_SET_2, "0");
+        String md3State = SystemProperties.get(PROPERTY_NET_CDMA_MDMSTAT, "not ready");
+        Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: cardTypeSet=" + cardTypeSet + "  cardTypeSet_2=" + cardTypeSet_2 + "  md3State=" + md3State);
+        if (!cardTypeSet.equals("1") || !cardTypeSet_2.equals("1") || !md3State.equals("ready")) {
+            mHandler.postDelayed(configModemRunnable, INITIAL_RETRY_INTERVAL_MSEC);
+            return;
+        }
+
+        int fullType = getFullCardType(0);
+
+        // handle special case for solution1 slot2:CDMA
+        int fullType_2 = getFullCardType(1);
+        int capability = SystemProperties.getInt(PhoneConstants.PROPERTY_CAPABILITY_SWITCH, 1);
+        Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: capability=" + capability);
+        boolean md3AccessProtocol2 = false;
+        if (((fullType_2 & CARD_TYPE_CSIM) == CARD_TYPE_CSIM || (fullType_2 & CARD_TYPE_RUIM) == CARD_TYPE_RUIM)//slot2:CDMA
+                && capability != 1) {// ES3G=2
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: md3AccessProtocol2 = true!");
+            md3AccessProtocol2 = true;
+        }
+
+        if (fullType == 0) {
+            // no card
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: no card");
+            if (md3AccessProtocol2) {
+                configModemStatus(1, 2, null);
+            } else {
+                configModemStatus(1, 1, null);
+            }
+        } else if ((fullType & CARD_TYPE_RUIM) == 0 && (fullType & CARD_TYPE_CSIM) == 0) {
+            // GSM only
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: GSM only");
+            configModemStatus(0, 1, null);
+        } else if (((fullType & CARD_TYPE_SIM) == 0 && (fullType & CARD_TYPE_USIM) == 0) ||
+                ((fullType & CARD_TYPE_SIM) == CARD_TYPE_SIM && (fullType & CARD_TYPE_RUIM) == CARD_TYPE_RUIM)) {
+            // CDMA only
+            // 1. no SIM and no USIM
+            // 2. RUIM and SIM (CT 3G card)
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: CDMA only");
+            if (md3AccessProtocol2) {
+                configModemStatus(1, 2, null);
+            } else {
+                configModemStatus(1, 1, null);
+            }
+        } else if ((fullType & CARD_TYPE_USIM) == CARD_TYPE_USIM && (fullType & CARD_TYPE_CSIM) == CARD_TYPE_CSIM) {
+            // CT LTE
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: CT LTE");
+            if (md3AccessProtocol2) {
+                configModemStatus(2, 2, null);
+            } else {
+                configModemStatus(2, 1, null);
+            }
+        } else {
+            //other case, may not happen!
+            Rlog.d(RILJ_LOG_TAG, "RIL configModemStatus: other case, may not happen!");
+        }
+    }
+
+    /**
+     * Set the xTK mode.
+     * @param mode The xTK mode.
+     */
+    public void setStkSwitchMode(int mode) { // Called by SvlteRatController
+        if (RILJ_LOGD) {
+            riljLog("setStkSwitchMode=" + mode + " old value=" + mStkSwitchMode);
+        }
+        mStkSwitchMode = mode;
+    }
+
+    /**
+     * Set the UTK Bip Ps type .
+     * @param mBipPsType The Bip type.
+     */
+    public void setBipPsType(int type) { // Called by SvltePhoneProxy
+        if (RILJ_LOGD) {
+            riljLog("setBipPsType=" + type + " old value=" + mBipPsType);
+        }
+        mBipPsType = type;
+    }
+    // M: [C2K] SVLTE Remote SIM Access end.
+
+    /**
+     * Switch antenna.
+     * @param callState call state, 0 means call disconnected and 1 means call established.
+     * @param ratMode RAT mode, 0 means GSM and 7 means C2K.
+     */
+    @Override
+    public void switchAntenna(int callState, int ratMode) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_SWITCH_ANTENNA, null);
+        rr.mParcel.writeInt(2);
+        rr.mParcel.writeInt(callState);
+        rr.mParcel.writeInt(ratMode);
+
+        if (RILJ_LOGD) {
+            riljLog(rr.serialString()
+                + "> " + requestToString(rr.mRequest) + " callState: " + callState
+                + ", ratMode:" + ratMode);
+        }
+
+        send(rr);
+    }
+
     private static int readRilMessage(InputStream is, byte[] buffer)
             throws IOException {
         int countRead;
@@ -2385,6 +4213,10 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 	protected class MTKRILReceiver extends RILReceiver {
         byte[] buffer;
 
+        // MTK
+        /// M: For SVLTE to disconnect socket in C2K only mode.
+        boolean mStoped = false;
+
         protected MTKRILReceiver() {
             buffer = new byte[RIL_MAX_COMMAND_BYTES];
         }
@@ -2396,39 +4228,61 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             String rilSocket = "rild";
 
             try {for (;;) {
+                // MTK
+                /// M: For SVLTE to disconnect socket in C2K only mode.
+                if (mStoped) {
+                    riljLog("[RIL SWITCH] stoped now!");
+                    return;
+                }
+
                 LocalSocket s = null;
                 LocalSocketAddress l;
 
-                if (mInstanceId == null || mInstanceId == 0 ) {
-                    rilSocket = SOCKET_NAME_RIL[0];
+                /// M: If SVLTE support, LTE RIL ID is a special value, force connect to rild socket
+                riljLog(
+                        "mInstanceId=" + mInstanceId +
+                        " mPreferredNetworkType=" + mPreferredNetworkType +
+                        " phoneType=" + TelephonyManager.getPhoneType(mPreferredNetworkType) +
+                        " SvlteUtils.isValidPhoneId ret=" + SvlteUtils.isValidPhoneId(mInstanceId) +
+                        " SvlteUtils.getSlotId ret=" + SvlteUtils.getSlotId(mInstanceId));
+                if (mInstanceId == null || SvlteUtils.isValidPhoneId(mInstanceId)) {
+                    rilSocket = SOCKET_NAME_RIL[SvlteUtils.getSlotId(mInstanceId)];
                 } else {
-                    rilSocket = SOCKET_NAME_RIL[mInstanceId];
-                }
-
-                int currentSim;
-                if (mInstanceId == null || mInstanceId ==0) {
-                    currentSim = 0;
-                } else {
-                    currentSim = mInstanceId;
-                }
-
-                int m3GsimId = 0;
-                m3GsimId =  SystemProperties.getInt("gsm.3gswitch", 0);
-                if((m3GsimId > 0) && (m3GsimId <= 2)) {
-                    --m3GsimId;
-                } else {
-                    m3GsimId = 0;
-                }
-
-                if (m3GsimId >= 1) {
-                    if (currentSim == 0) {
-                       rilSocket = SOCKET_NAME_RIL[m3GsimId];
+                    if (SystemProperties.getInt("ro.mtk_dt_support", 0) != 1) {
+                        // dsds
+                        rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                    } else {
+                        // dsda
+                        if (SystemProperties.getInt("ro.evdo_dt_support", 0) == 1) {
+                            // c2k dsda
+                            rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                        } else if (SystemProperties.getInt("ro.telephony.cl.config", 0) == 1) {
+                            // for C+L
+                            rilSocket = SOCKET_NAME_RIL[mInstanceId];
+                        } else {
+                            // gsm dsda
+                            rilSocket = "rild-md2";
+                        }
                     }
-                    else if(currentSim == m3GsimId) {
-                       rilSocket = SOCKET_NAME_RIL[0];
-                    }
-                    if (RILJ_LOGD) riljLog("Capability switched, swap sockets [" + currentSim + ", " + rilSocket + "]");
                 }
+
+                /* M: C2K start */
+                int phoneType = TelephonyManager.getPhoneType(mPreferredNetworkType);
+                if (phoneType == PhoneConstants.PHONE_TYPE_CDMA) {
+                    rilSocket = C2K_SOCKET_NAME_RIL;
+                }
+                /* M: C2K end */
+
+                // xen0n: hardcode SUB10 and friends
+                if (mInstanceId != null) {
+                    if (mInstanceId == 10) {
+                        rilSocket = SOCKET_NAME_RIL[0];
+                    } else if (mInstanceId == 11) {
+                        // TODO: what to do in this case?
+                    }
+                }
+
+                riljLog("rilSocket[" + mInstanceId + "] = " + rilSocket);
 
                 try {
                     s = new LocalSocket();
@@ -2533,6 +4387,10 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
                 // Clear request list on close
                 clearRequestList(RADIO_NOT_AVAILABLE, false);
+                if (configModemRunnable != null) {
+                    Rlog.i(RILJ_LOG_TAG, "clear configModemRunnable");
+                    mHandler.removeCallbacks(configModemRunnable);
+                }
             }} catch (Throwable tr) {
                 Rlog.e(RILJ_LOG_TAG,"Uncaught exception", tr);
             }
@@ -2541,47 +4399,4 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             notifyRegistrantsRilConnectionChanged(-1);
         }
     }
-
-    /* broken by new version of MTK RIL, disable for now */
-    /*
-    public void handle3GSwitch() {
-        int simId = mInstanceId == null ? 0 : mInstanceId;
-        int newsim = SystemProperties.getInt("gsm.3gswitch", 0);
-        newsim = newsim - 1;
-        if(!(simId==newsim)) {
-	    int prop = SystemProperties.getInt("gsm.3gswitch", 0);
-            if (RILJ_LOGD) riljLog("Setting data subscription on SIM" + (simId + 1) + " mInstanceid=" + mInstanceId + " gsm.3gswitch=" + prop);
-            RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_3G_CAPABILITY, null);
-            rr.mParcel.writeInt(1);
-            int realsim = simId + 1;
-            rr.mParcel.writeInt(realsim);
-            if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
-            send(rr);
-	    try {
-                Thread.sleep(1000);
-            } catch (InterruptedException er) {
-            }
-	    resetRadio(null);
-	    try {
-                Thread.sleep(4*1000);
-            } catch (InterruptedException er) {
-            }
-	}
-	else {
-            if (RILJ_LOGD) riljLog("Not setting data subscription on same SIM");
-	}
-    }
-
-    public void setDataAllowed(boolean allowed, Message result) {
-        handle3GSwitch();
-
-        RILRequest rr = RILRequest.obtain(RIL_REQUEST_ALLOW_DATA, result);
-        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
-                + " " + allowed);
-
-        rr.mParcel.writeInt(1);
-        rr.mParcel.writeInt(allowed ? 1 : 0);
-        send(rr);
-    }
-    */
 }

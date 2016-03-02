@@ -21,6 +21,7 @@ import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import static android.Manifest.permission.READ_PHONE_STATE;
 
 import android.os.AsyncResult;
@@ -374,23 +375,92 @@ public class UiccController extends Handler {
         synchronized (mLock) {
             Integer index = getCiIndex(msg);
 
+            // MTK
             if (index < 0 || index >= mCis.length) {
-                Rlog.e(LOG_TAG, "Invalid index : " + index + " received with event " + msg.what);
-                return;
+                if (indexValidForSvlte(index)) {
+                    if (DBG) {
+                        log("SVLTE index");
+                    }
+                } else {
+                    Rlog.e(LOG_TAG, "Invalid index : " + index + " received with event "
+                        + msg.what);
+                    return;
+                }
             }
-
+            AsyncResult ar = null;
+            if (msg.obj instanceof AsyncResult) {
+                ar = (AsyncResult)msg.obj;
+            }
             switch (msg.what) {
                 case EVENT_ICC_STATUS_CHANGED:
-                    if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus");
-                    mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE, index));
+                    // MTK
+                    if (DBG) log("Received EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus, index: "
+                            + index);
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport() ) {
+                        // add for handle IPO boot up, when Radio available but C2K sim not ready
+                        // this may cause update "ABSENT" state for wrong
+                        String configSend = SystemProperties.get(PROPERTY_CONFIG_EMDSTATUS_SEND, "0");
+                        String iccidC2k = SystemProperties.get(PROPERTY_ICCID_C2K, "");
+                        log("svlte handle EVENT_ICC_STATUS_CHANGED, check configSend="
+                            + configSend + " iccidC2k=" + iccidC2k
+                                + " mSetRadioDone=" + mSetRadioDone);
+                        log("mSvlteCi: " + ((null != mSvlteCi) ? mSvlteCi.hashCode() : null));
+                        for (int i = 0; i < mCis.length; i++) {
+                            log("mCis[" + i + "]: "
+                                    + ((null != mCis[i]) ? mCis[i].hashCode() : null));
+                        }
+                        if (mSetRadioDone == false) {
+                            log("EVENT_ICC_STATUS_CHANGED, index: " + index + " radio not done, sendDelay");
+                            sendMessageDelayed(obtainMessage(EVENT_ICC_STATUS_CHANGED, index), 1000);
+                            break;
+                        } else if ((SvlteModeController.getActiveSvlteModeSlotId() != SvlteModeController.CSFB_ON_SLOT)
+                            && (index == mSvlteIndex) && (mC2KWPCardtype[index] != 0)
+                            && (!configSend.equals("1") || iccidC2k.equals(""))) {
+                            log("EVENT_ICC_STATUS_CHANGED, index: " + index + " c2k not ready, sendDelay");
+                            sendMessageDelayed(obtainMessage(EVENT_ICC_STATUS_CHANGED, index), 1000);
+                            break;
+                        }
+                    }
+
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport() && index == INDEX_SVLTE) {
+                        int fullType = getFullCardType(mSvlteIndex);
+                        updateNotifyIccCount();
+                        if (fullType == 0 || (fullType & CARD_TYPE_SIM) != 0
+                            || (fullType & CARD_TYPE_USIM) != 0) {
+                            if (DBG) {
+                                log("EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus via GSM");
+                            }
+                            mSvlteCi.getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE,
+                                index));
+                        }
+                        /*
+                        if (mSvlteIndex != -1 &&
+                            ((fullType & CARD_TYPE_CSIM) != 0
+                                || (fullType & CARD_TYPE_RUIM) != 0)) {
+                            if (DBG) {
+                                log("EVENT_ICC_STATUS_CHANGED, calling getIccCardStatus via CDMA");
+                            }
+                            mCis[mSvlteIndex].getIccCardStatus(obtainMessage(
+                                EVENT_GET_ICC_STATUS_DONE, mSvlteIndex));
+                        }*/
+                    } else {
+                        if (ignoreGetSimStatus()) {
+                            if (DBG) log("FlightMode ON, Modem OFF: ignore get sim status");
+                        } else {
+                            mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE,
+                                index));
+                        }
+                    }
                     break;
                 case EVENT_GET_ICC_STATUS_DONE:
                     if (DBG) log("Received EVENT_GET_ICC_STATUS_DONE");
-                    AsyncResult ar = (AsyncResult)msg.obj;
+                    ar = (AsyncResult)msg.obj;
                     onGetIccCardStatusDone(ar, index);
                     break;
                 case EVENT_RADIO_UNAVAILABLE:
                     if (DBG) log("EVENT_RADIO_UNAVAILABLE, dispose card");
+                    // MTK
+                    mSetRadioDone = false;
                     if (mUiccCards[index] != null) {
                         mUiccCards[index].dispose();
                     }
@@ -414,6 +484,225 @@ public class UiccController extends Handler {
                         handleRefresh(parseOemSimRefresh(payload), index);
                     } else {
                         log ("Exception on refresh " + ar.exception);
+                    }
+                    break;
+                // MTK
+                case EVENT_REPOLL_SML_STATE:
+                    if (DBG) log("Received EVENT_REPOLL_SML_STATE");
+                    ar = (AsyncResult) msg.obj;
+                    boolean needIntent = msg.arg1 == SML_FEATURE_NEED_BROADCAST_INTENT ? true : false;
+
+                    //Update Uicc Card status.
+                    onGetIccCardStatusDone(ar, index, false);
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport() && index == INDEX_SVLTE) {
+                        index = mSvlteIndex;
+                    }
+
+                    // If we still in Network lock, broadcast intent if caller need this intent.
+                    if (mUiccCards[index] != null && needIntent == true) {
+                        UiccCardApplication app = mUiccCards[index].getApplication(APP_FAM_3GPP);
+                        if (app == null) {
+                            if (DBG) log("UiccCardApplication = null");
+                            break;
+                        }
+                        if (app.getState() == AppState.APPSTATE_SUBSCRIPTION_PERSO) {
+                            Intent lockIntent = new Intent();
+                            if (null == lockIntent) {
+                                if (DBG) log("New intent failed");
+                                return;
+                            }
+                            if (DBG) log("Broadcast ACTION_UNLOCK_SIM_LOCK");
+                            lockIntent.setAction(TelephonyIntents.ACTION_UNLOCK_SIM_LOCK);
+                            lockIntent.putExtra(IccCardConstants.INTENT_KEY_ICC_STATE,
+                                    IccCardConstants.INTENT_VALUE_ICC_LOCKED);
+                            lockIntent.putExtra(IccCardConstants.INTENT_KEY_LOCKED_REASON,
+                                    parsePersoType(app.getPersoSubState()));
+                            SubscriptionManager.putPhoneIdAndSubIdExtra(lockIntent, index);
+                            mContext.sendBroadcast(lockIntent);
+                        }
+                    }
+                    break;
+                case EVENT_TURN_ON_ISIM_APPLICATION_DONE:
+                    if (DBG) log("Received EVENT_TURN_ON_ISIM_APPLICATION_DONE");
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception != null) {
+                        Rlog.e(LOG_TAG, "[SIM " + index + "] Error turn on ISIM. ", ar.exception);
+                        mApplicationChangedRegistrants.notifyRegistrants();
+                        return;
+                    }
+
+                    //Response format: <Application ID>, <Session ID>
+                    int[] ints = (int[]) ar.result;
+                    if (DBG) log("Application ID = " + ints[0] + "Session ID = " + ints[1]);
+
+                    mIsimSessionId[index] =  ints[1];
+                    mCis[index].getIccApplicationStatus(mIsimSessionId[index],
+                            obtainMessage(EVENT_GET_ICC_APPLICATION_STATUS, index));
+                    break;
+                case EVENT_GET_ICC_APPLICATION_STATUS:
+                    if (DBG) log("Received EVENT_GET_ICC_APPLICATION_STATUS");
+                    ar = (AsyncResult) msg.obj;
+                    onGetIccApplicationStatusDone(ar, index);
+                    break;
+                case EVENT_APPLICATION_SESSION_CHANGED:
+                    if (DBG) log("Received EVENT_APPLICATION_SESSION_CHANGED");
+                    ar = (AsyncResult) msg.obj;
+
+                    //Response format: <Application ID>, <Session ID>
+                    int[] result = (int[]) ar.result;
+                    // FIXME: application id and array index? only support one application now.
+                    if (DBG) log("Application = " + result[0] + ", Session = " + result[1]);
+                    mIsimSessionId[index] =  result[1];
+                    break;
+                case EVENT_VIRTUAL_SIM_ON:
+                    if (DBG) {
+                        log("handleMessage (EVENT_VIRTUAL_SIM_ON)");
+                    }
+                    setNotificationVirtual(index, EVENT_VIRTUAL_SIM_ON);
+                    SharedPreferences shOn = mContext.getSharedPreferences("AutoAnswer", 1);
+                    SharedPreferences.Editor editorOn = shOn.edit();
+                    editorOn.putBoolean("flag", true);
+                    editorOn.commit();
+                    break;
+               case EVENT_VIRTUAL_SIM_OFF:
+                    if (DBG) log("handleMessage (EVENT_VIRTUAL_SIM_OFF)");
+                    removeNotificationVirtual(index, EVENT_VIRTUAL_SIM_ON);
+                    //setNotification(index, EVENT_SIM_MISSING);
+                    SharedPreferences shOff = mContext.getSharedPreferences("AutoAnswer", 1);
+                    SharedPreferences.Editor editorOff = shOff.edit();
+                    editorOff.putBoolean("flag", false);
+                    editorOff.commit();
+                    break;
+                case EVENT_SIM_RECOVERY:
+                    if (DBG) log("handleMessage (EVENT_SIM_RECOVERY)");
+                    mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE_FOR_SIM_RECOVERY, index));
+                    mRecoveryRegistrants.notifyRegistrants(new AsyncResult(null, index, null));
+                    //disableSimMissingNotification(index);
+
+                    //ALPS01209124
+                    Intent intent = new Intent();
+                    intent.setAction(TelephonyIntents.ACTION_SIM_RECOVERY_DONE);
+                    mContext.sendBroadcast(intent);
+                    break;
+                case EVENT_SIM_MISSING:
+                    if (DBG) log("handleMessage (EVENT_SIM_MISSING)");
+                    //setNotification(index, EVENT_SIM_MISSING);
+                    mCis[index].getIccCardStatus(obtainMessage(EVENT_GET_ICC_STATUS_DONE_FOR_SIM_MISSING, index));
+                    break;
+                case EVENT_GET_ICC_STATUS_DONE_FOR_SIM_MISSING:
+                    if (DBG) log("Received EVENT_GET_ICC_STATUS_DONE_FOR_SIM_MISSING");
+                    ar = (AsyncResult) msg.obj;
+                    onGetIccCardStatusDone(ar, index, false);
+                    break;
+                case EVENT_GET_ICC_STATUS_DONE_FOR_SIM_RECOVERY:
+                    if (DBG) log("Received EVENT_GET_ICC_STATUS_DONE_FOR_SIM_RECOVERY");
+                    ar = (AsyncResult) msg.obj;
+                    onGetIccCardStatusDone(ar, index, false);
+                    break;
+                case EVENT_COMMON_SLOT_NO_CHANGED:
+                    if (DBG) log("handleMessage (EVENT_COMMON_SLOT_NO_CHANGED)");
+                    Intent intentNoChanged = new Intent(TelephonyIntents.ACTION_COMMON_SLOT_NO_CHANGED);
+                    int slotId = index.intValue();
+                    SubscriptionManager.putPhoneIdAndSubIdExtra(intentNoChanged, slotId);
+                    log("Broadcasting intent ACTION_COMMON_SLOT_NO_CHANGED for mSlotId : " + slotId);
+                    mContext.sendBroadcast(intentNoChanged);
+                    break;
+                case EVENT_CDMA_CARD_TYPE:
+                    if (DBG) {
+                        log("handleMessgage (EVENT_CDMA_CARD_TYPE)");
+                    }
+                    ar = (AsyncResult) msg.obj;
+                    if (ar.exception == null) {
+                        int[] resultType = (int[]) ar.result;
+                        if (resultType != null) {
+                            if (isValidCardType(resultType[0])) {
+                                mCdmaCardType = IccCardConstants.CardType
+                                        .getCardTypeFromInt(resultType[0]);
+                                broadcastCdmaCardTypeIntent();
+                            } else {
+                                log("invalid cardType=" + resultType[0]);
+                            }
+                        }
+                    }
+                    break;
+                case EVENT_SIM_PLUG_IN:
+                    if (DBG) {
+                        log("Received EVENT_SIM_PLUG_IN, index=" + index);
+                    }
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        //Reset modems if CT card is plug in slot 1 when slot 2 is also CT card.
+                          if (isCdmaCard(index)) {
+                             //Reset Modem
+                             setTrm();
+                          } else {
+                             updateC2KWPCardtype(true);
+                        //configModemRemoteSimAccess();
+                        }
+                    }
+                    break;
+                case EVENT_SIM_PLUG_OUT:
+                    if (DBG) {
+                        log("Received EVENT_SIM_PLUG_OUT, index=" + index);
+                    }
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        /*
+                        * Reset modems when unplug one SIM under both CT card inserted case.
+                        * Unplug the SIM registered network, the c socket will connects to the other.
+                        * Because the modem has report the card type and state, so in this case will
+                        * not report again when switch socket connection. So need reboot modem for a
+                        * new init flow.
+                        */
+                        boolean allAreCdmaSim = true;
+                        for (int id = 0; id < mC2KWPCardtype.length; id++) {
+                            if (mC2KWPCardtype[id] < CARD_TYPE_RUIM) {
+                                allAreCdmaSim = false;
+                                break;
+                            }
+                        }
+                        if (allAreCdmaSim) {
+                            //Reset Modem
+                            setTrm();
+                            /*
+                            * To avoid both CT cards are unpluged case at same time,
+                            * when unplug the second SIM, we should not do reset modem action.
+                            */
+                            for (int i = 0; i < mC2KWPCardtype.length; i++) {
+                                mC2KWPCardtype[i] = getFullCardType(i);
+                                Rlog.d(LOG_TAG, "EVENT_SIM_PLUG_OUT mC2KWPCardtype[" + i + "]=" + mC2KWPCardtype[i]);
+                            }
+                        } else {
+                            updateC2KWPCardtype(true);
+                            //configModemRemoteSimAccess();
+                        }
+                    }
+                    break;
+                case EVENT_EUSIM_READY:
+                    if (DBG) {
+                       log("Received EVENT_EUSIM_READY, index=" + index
+                           + ", bSetTrm=" + bSetTrm);
+                    }
+                    if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                        sProxyPhones = PhoneFactory.getPhones();
+                        String rilInit = SystemProperties.get("gsm.ril.init", "0");
+                        log("get gsm.ril.init : " + rilInit);
+                        int phoneCount = TelephonyManager.getDefault().getSimCount();
+                        if ((phoneCount >= 2) && rilInit.equals("1")) {
+                            //Omit updateC2KWPCardtype once
+                            SystemProperties.set("gsm.ril.init", "0");
+                            log("set gsm.ril.init to 0");
+                            break;
+                        } else {
+                            SystemProperties.set("gsm.ril.init", "0");
+                            log("Clear gsm.ril.init to 0");
+                        }
+
+                        updateC2KWPCardtype(false);
+
+                        String cfunSend = SystemProperties.get("ril.cfun.send", "0");
+                        if (cfunSend.equals("1")) {
+                            //configModemRemoteSimAccess();
+                            SystemProperties.set("ril.cfun.send", "0");
+                        }
                     }
                     break;
                 default:

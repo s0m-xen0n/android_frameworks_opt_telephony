@@ -39,6 +39,7 @@ import android.provider.Telephony;
 import android.telephony.CellLocation;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.ServiceState;
+import android.telephony.SignalStrength;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.telephony.cdma.CdmaCellLocation;
@@ -277,7 +278,19 @@ public class CDMAPhone extends PhoneBase {
     public void dispose() {
         synchronized(PhoneProxy.lockForRadioTechnologyChange) {
             super.dispose();
-            log("dispose");
+            // MTK
+            log("dispose, mIsPhoneInEcmState:" + mIsPhoneInEcmState);
+
+            // AGPS
+            if (CdmaFeatureOptionUtils.isMtkC2KSupport()) {
+                mGpsProcess.stop();
+            }
+
+            // UTK Service
+            if (mUtkService != null) {
+                mUtkService.dispose();
+                mUtkService = null;
+            }
 
             //Unregister from all former registered events
             unregisterForRuimRecordEvents();
@@ -289,11 +302,37 @@ public class CDMAPhone extends PhoneBase {
             mCi.unregisterForExitEmergencyCallbackMode(this);
             removeCallbacks(mExitEcmRunnable);
 
+            // MTK
+            if (mIsPhoneInEcmState) {
+                if (mWakeLock.isHeld()) {
+                    mWakeLock.release();
+                }
+                if (mEcmExitRespRegistrant != null) {
+                    mEcmExitRespRegistrant.notifyRegistrant(new AsyncResult(null, null, null));
+                }
+                //add by via for exit ECM when dial Threeway[begin]
+                if (mThreeWayEcmExitRespRegistrant != null) {
+                    mThreeWayEcmExitRespRegistrant.notifyRegistrant(
+                            new AsyncResult(null, null, null));
+                }
+                //add by via for exit ECM when dial Threeway[end]
+                mIsPhoneInEcmState = false;
+                sendEmergencyCallbackModeChange();
+            }
+            removeCallbacksAndMessages(null);
+
             mPendingMmis.clear();
 
             //Force all referenced classes to unregister their former registered events
             mCT.dispose();
-            mDcTracker.dispose();
+            // MTK
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                // Do nothing, we will create and share DcTracker in
+                // LteDcPhoneProxy.
+                log("IRAT support, doesn't dispose DcTracker here.");
+            } else {
+                mDcTracker.dispose();
+            }
             mSST.dispose();
             mCdmaSSM.dispose(this);
             mRuimPhoneBookInterfaceManager.dispose();
@@ -677,12 +716,21 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public String getEsn() {
-        return mEsn;
+        // MTK
+        if (mEsn != null) {
+            if (mEsn.startsWith("0x") || mEsn.startsWith("0X")) {
+                mEsn = mEsn.substring(2);
+            }
+            return mEsn.toUpperCase();
+        } else {
+            return null;
+        }
     }
 
     @Override
     public String getMeid() {
-        return mMeid;
+        // MTK
+        return mMeid != null ? mMeid.toUpperCase() : null;
     }
 
     @Override
@@ -713,7 +761,18 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public String getSubscriberId() {
+        // MTK TODO: does this need modification?
         return mSST.getImsi();
+        /*
+        IccRecords r = mIccRecords.get();
+        if (r == null) {
+            log("mIccRecords is null, so imsi return null");
+            return null;
+        } else {
+            log("IMSI is " + r.getIMSI());
+            return r.getIMSI();
+        }
+        */
     }
 
     @Override
@@ -813,7 +872,12 @@ public class CDMAPhone extends PhoneBase {
 
     @Override
     public void setLine1Number(String alphaTag, String number, Message onComplete) {
-        Rlog.e(LOG_TAG, "setLine1Number: not possible in CDMA");
+        // Everything is possible, this is MTK
+        // Rlog.e(LOG_TAG, "setLine1Number: not possible in CDMA");
+        Rlog.d(LOG_TAG, "setLine1Number: " + number);
+        mSST.setMdnNumber(number, onComplete);
+        // don't know why MTK has this
+        // return false;
     }
 
     @Override
@@ -1367,9 +1431,20 @@ public class CDMAPhone extends PhoneBase {
         }
         switch(msg.what) {
             case EVENT_RADIO_AVAILABLE: {
+                // MTK
+                Rlog.d(LOG_TAG, "Event EVENT_RADIO_AVAILABLE");
+                mIsRadioAvailable = true;
+                broadcastRadioAvailableState();
+
                 mCi.getBasebandVersion(obtainMessage(EVENT_GET_BASEBAND_VERSION_DONE));
 
                 mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+
+                // MTK
+                mCi.getRadioCapability(obtainMessage(EVENT_GET_RADIO_CAPABILITY));
+                // default value used by cp is 2.
+                Rlog.d(LOG_TAG, "setArsiReportThreshold threshold = 1");
+                setArsiReportThreshold(2);
             }
             break;
 
@@ -1382,8 +1457,13 @@ public class CDMAPhone extends PhoneBase {
 
                 if (DBG) Rlog.d(LOG_TAG, "Baseband version: " + ar.result);
                 if (!"".equals((String)ar.result)) {
-                    setSystemProperty(TelephonyProperties.PROPERTY_BASEBAND_VERSION,
-                                      (String)ar.result);
+                    // MTK
+                    if (CdmaFeatureOptionUtils.isMtkC2KSupport()) {
+                        setSystemProperty("cdma.version.baseband", (String) ar.result);
+                    } else {
+                        TelephonyManager.from(mContext).setBasebandVersionForPhone(getPhoneId(),
+                                (String) ar.result);
+                    }
                 }
             }
             break;
@@ -1424,6 +1504,18 @@ public class CDMAPhone extends PhoneBase {
 
             case EVENT_RADIO_OFF_OR_NOT_AVAILABLE:{
                 Rlog.d(LOG_TAG, "Event EVENT_RADIO_OFF_OR_NOT_AVAILABLE Received");
+
+                // MTK
+                if (!mCi.getRadioState().isAvailable()) {
+                    mIsRadioAvailable = false;
+                    broadcastRadioAvailableState();
+                }
+                Rlog.d(LOG_TAG, "Event QUERY UIM INSERTED STATUS");
+
+                ImsPhone imsPhone = mImsPhone;
+                if (imsPhone != null) {
+                    imsPhone.getServiceState().setStateOff();
+                }
             }
             break;
 
@@ -1477,6 +1569,42 @@ public class CDMAPhone extends PhoneBase {
             }
             break;
 
+            // MTK
+            case EVENT_SET_MEID_DONE: {
+                if (DBG) {
+                    Rlog.d(LOG_TAG, "EVENT_SET_MEID_DONE");
+                }
+                // Get device identity, MEID has been changed
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception == null) {
+                    mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+                } else {
+                    if (DBG) {
+                        Rlog.w(LOG_TAG, "[CDMAPhone, EVENT_SET_MEID_DONE, exception]");
+                    }
+                }
+            }
+            break;
+
+            case EVENT_RUIM_READY: {
+                if (DBG) {
+                    Rlog.d(LOG_TAG, "CDMAPhone EVENT_RUIM_READY");
+                }
+                mCi.getDeviceIdentity(obtainMessage(EVENT_GET_DEVICE_IDENTITY_DONE));
+
+                if (mUiccController != null) {
+                    //Modify for WP solution 2
+                    Rlog.d(LOG_TAG, "Utk WP2: mPhoneId = " + mPhoneId);
+                    
+                    mUtkService = ViaPolicyManager.getUtkService(mCi, mContext,
+                            mUiccController.getUiccCard(mPhoneId));
+                    /*mUtkService = UtkService.getInstance(mCi, mContext,
+                            mUiccController.getUiccCard());*/
+                }
+
+            }
+            break;
+
             default:{
                 super.handleMessage(msg);
             }
@@ -1513,6 +1641,16 @@ public class CDMAPhone extends PhoneBase {
             log("can't find 3GPP2 application; trying APP_FAM_3GPP");
             newUiccApplication =
                     mUiccController.getUiccCardApplication(mPhoneId, UiccController.APP_FAM_3GPP);
+            // MTK
+            //WPS2 modification
+            if (newUiccApplication == null) {
+                log("can't find 3GPP application;");
+                if (mUtkService != null) {
+                    log("Dispose UtkService" + mPhoneId);
+                    ViaPolicyManager.disposeUtkService(mPhoneId);
+                    mUtkService = null;
+                }
+            }
         }
 
         UiccCardApplication app = mUiccApplication.get();
@@ -1530,6 +1668,27 @@ public class CDMAPhone extends PhoneBase {
                 mUiccApplication.set(newUiccApplication);
                 mIccRecords.set(newUiccApplication.getIccRecords());
                 registerForRuimRecordEvents();
+                // MTK
+                newUiccApplication.registerForReady(this, EVENT_RUIM_READY, null);
+            }
+        }
+        // MTK
+        else if (newUiccApplication != null) {
+            log("Uicc application is same");
+            IccRecords oldRecords = mIccRecords.get();
+            IccRecords newRecords = newUiccApplication.getIccRecords();
+            if (oldRecords != newRecords) {
+                log("But iccrecords is different, update iccrecords");
+                if (oldRecords != null) {
+                    unregisterForRuimRecordEvents();
+                    // mRuimPhoneBookInterfaceManager.updateIccRecords(null);
+                    mIccRecords.set(null);
+                }
+                if (newRecords != null) {
+                    mIccRecords.set(newRecords);
+                    registerForRuimRecordEvents();
+                    // mRuimPhoneBookInterfaceManager.updateIccRecords(mIccRecords.get());
+                }
             }
         }
     }
@@ -2034,6 +2193,48 @@ public class CDMAPhone extends PhoneBase {
     }
 
     // MTK
+
+    @Override
+    public SignalStrength getSignalStrength() {
+        return mSST.getSignalStrength();
+    }
+
+    /**
+     * Register callback for Three Way Ecm Exit Response.
+     * @param h the message hander.
+     * @param what the message id.
+     * @param obj the message object.
+     */
+    public void setOnThreeWayEcmExitResponse(Handler h, int what, Object obj) {
+        mThreeWayEcmExitRespRegistrant = new Registrant(h, what, obj);
+    }
+
+    /**
+     * Unregister callback for Three Way Ecm Exit Response.
+     * @param h the message handler.
+     */
+    public void unsetOnThreeWayEcmExitResponse(Handler h) {
+        mThreeWayEcmExitRespRegistrant.clear();
+    }
+
+    @Override
+    public void cancelAvailableNetworks(Message response) {
+        Rlog.e(LOG_TAG, "cancelAvailableNetworks: not possible in CDMA");
+    }
+
+    void notifySpeechCodecInfo(int type) {
+        mSpeechCodecInfoRegistrants.notifyResult(type);
+    }
+
+    private void broadcastRadioAvailableState() {
+        if (DBG) {
+            log("sendBroadcastRadioAvailable "
+                    + TelephonyIntents.ACTION_RADIO_AVAILABLE + " = " + mIsRadioAvailable);
+        }
+        Intent intent = new Intent(TelephonyIntents.ACTION_RADIO_AVAILABLE);
+        intent.putExtra(TelephonyIntents.EXTRA_RADIO_AVAILABLE_STATE, mIsRadioAvailable);
+        ActivityManagerNative.broadcastStickyIntent(intent, null, UserHandle.USER_ALL);
+    }
 
     public void registerForAllDataDisconnected(Handler h, int what, Object obj) {
         ((DcTracker)mDcTracker)

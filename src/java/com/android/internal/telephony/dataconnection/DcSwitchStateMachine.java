@@ -123,20 +123,32 @@ public class DcSwitchStateMachine extends StateMachine {
                         log("IdleState: REQ_CONNECT");
                     }
 
-                    PhoneBase pb = (PhoneBase)((PhoneProxy)mPhone).getActivePhone();
-                    pb.mCi.setDataAllowed(true, null);
-                    boolean isPrimarySubFeatureEnable =
-                            SystemProperties.getBoolean("persist.radio.primarycard", false);
-                    int subId = pb.getSubId();
-                    log("Setting default DDS on " + subId + " primary Sub feature"
-                            + isPrimarySubFeatureEnable);
+                    // MTK: this would crash on MTK phones
+                    // PhoneBase pb = (PhoneBase)((PhoneProxy)mPhone).getActivePhone();
+                    // pb.mCi.setDataAllowed(true, null);
+                    // boolean isPrimarySubFeatureEnable =
+                    //         SystemProperties.getBoolean("persist.radio.primarycard", false);
+                    // int subId = pb.getSubId();
+                    // log("Setting default DDS on " + subId + " primary Sub feature"
+                    //         + isPrimarySubFeatureEnable);
 
-                    // When isPrimarySubFeatureEnable is enabled apps will take care
-                    // of sending DDS request during device power-up.
-                    if (!isPrimarySubFeatureEnable) {
-                        SubscriptionController subscriptionController
-                                = SubscriptionController.getInstance();
-                        subscriptionController.setDefaultDataSubId(subId);
+                    // // When isPrimarySubFeatureEnable is enabled apps will take care
+                    // // of sending DDS request during device power-up.
+                    // if (!isPrimarySubFeatureEnable) {
+                    //     SubscriptionController subscriptionController
+                    //             = SubscriptionController.getInstance();
+                    //     subscriptionController.setDefaultDataSubId(subId);
+                    // }
+                    RequestInfo apnRequest = null;
+
+                    if (msg.obj != null) {
+                        apnRequest = (RequestInfo) msg.obj;
+
+                        mAttachingState.mTriggeredWithoutSIM = isRequestEIMSWithoutSIM(apnRequest);
+                    }
+
+                    if (DBG) {
+                        log("IdleState: REQ_CONNECT, apnRequest=" + apnRequest);
                     }
 
                     mAc.replyToMessage(msg, DcSwitchAsyncChannel.RSP_CONNECT,
@@ -157,7 +169,9 @@ public class DcSwitchStateMachine extends StateMachine {
                     if (DBG) {
                         log("AttachingState: EVENT_DATA_ATTACHED");
                     }
-                    transitionTo(mAttachedState);
+                    // MTK
+                    // transitionTo(mAttachedState);
+                    mIsAttached = true;
                     retVal = HANDLED;
                     break;
 
@@ -285,7 +299,9 @@ public class DcSwitchStateMachine extends StateMachine {
                     mAc.replyToMessage(msg, DcSwitchAsyncChannel.RSP_DISCONNECT_ALL,
                             PhoneConstants.APN_REQUEST_STARTED);
 
-                    transitionTo(mDetachingState);
+                    // MTK
+                    // transitionTo(mDetachingState);
+                    transitionTo(mPreDetachCheckState);
                     retVal = HANDLED;
                     break;
                 }
@@ -352,7 +368,9 @@ public class DcSwitchStateMachine extends StateMachine {
                     mAc.replyToMessage(msg, DcSwitchAsyncChannel.RSP_DISCONNECT_ALL,
                             PhoneConstants.APN_REQUEST_STARTED);
 
-                    transitionTo(mDetachingState);
+                    // MTK
+                    // transitionTo(mDetachingState);
+                    transitionTo(mPreDetachCheckState);
                     retVal = HANDLED;
                     break;
                 }

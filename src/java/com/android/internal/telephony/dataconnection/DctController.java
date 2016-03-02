@@ -334,6 +334,16 @@ public class DctController extends Handler {
     private Handler mRspHandler = new Handler() {
         @Override
         public void handleMessage(Message msg){
+            // MTK
+            // NOTE: the order IS important!
+            if (msg.what >= EVENT_RESTORE_PENDING) {
+                logd("EVENT_SIM" + (msg.what - EVENT_RESTORE_PENDING + 1) + "_RESTORE.");
+                restorePendingRequest(msg.what - EVENT_RESTORE_PENDING);
+            } else if (msg.what >= EVENT_SET_DATA_ALLOWED) {
+                logd("EVENT_PHONE" + (msg.what - EVENT_SET_DATA_ALLOWED + 1) + "_SET_DATA_ALLOWED");
+                transitToAttachingState(msg.what - EVENT_SET_DATA_ALLOWED);
+            } else
+            // CM
             if (msg.what >= EVENT_DATA_DETACHED) {
                 logd("EVENT_PHONE" + (msg.what - EVENT_DATA_DETACHED + 1)
                         + "_DATA_DETACH.");
@@ -343,14 +353,6 @@ public class DctController extends Handler {
                 logd("EVENT_PHONE" + (msg.what - EVENT_DATA_ATTACHED + 1)
                         + "_DATA_ATTACH.");
                 mDcSwitchAsyncChannel[msg.what - EVENT_DATA_ATTACHED].notifyDataAttached();
-            }
-            // MTK
-            else if (msg.what >= EVENT_RESTORE_PENDING) {
-                logd("EVENT_SIM" + (msg.what - EVENT_RESTORE_PENDING + 1) + "_RESTORE.");
-                restorePendingRequest(msg.what - EVENT_RESTORE_PENDING);
-            } else if (msg.what >= EVENT_SET_DATA_ALLOWED) {
-                logd("EVENT_PHONE" + (msg.what - EVENT_SET_DATA_ALLOWED + 1) + "_SET_DATA_ALLOWED");
-                transitToAttachingState(msg.what - EVENT_SET_DATA_ALLOWED);
             }
         }
     };
