@@ -279,6 +279,28 @@ public class UiccController extends Handler {
                 mCis[i].registerForIccRefresh(this, EVENT_REFRESH, index);
             }
         }
+
+        // MTK
+        // xen0n: seems the logic is entirely different... nevermind :-/
+        mOperatorSpec = SystemProperties.get("ro.operator.optr", OPERATOR_OM);
+        log("Operator Spec:" + mOperatorSpec);
+        //Set mCi0 and mCi1
+        setCis(mCis, true);
+        // C2K World Phone, init card type by EUSIM when UiccController init
+        initC2KWPCardtype();
+
+        IntentFilter filter = new IntentFilter();
+        /* TODO: Wait for SIM Info migration done
+        filter.addAction(TelephonyIntents.ACTION_SIM_INFO_UPDATE);
+        */
+        filter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        filter.addAction(ACTION_RESET_MODEM);
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            filter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+            filter.addAction(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_START);
+            filter.addAction(TelephonyIntents.ACTION_SET_RADIO_TECHNOLOGY_DONE);
+        }
+        mContext.registerReceiver(mIntentReceiver, filter);
     }
 
     public static UiccController getInstance() {
@@ -861,6 +883,40 @@ public class UiccController extends Handler {
     }
 
     // MTK
+
+    private class InitCardtypeRunnable implements Runnable {
+        public InitCardtypeRunnable() {
+        }
+        @Override
+        public void run() {
+            initC2KWPCardtype();
+        }
+    }
+
+    private void initC2KWPCardtype() {
+        String cardTypeSet = SystemProperties.get(PROPERTY_RIL_CARD_TYPE_SET, "0");
+        String cardTypeSet_2 = SystemProperties.get(PROPERTY_RIL_CARD_TYPE_SET_2, "0");
+        Rlog.d(LOG_TAG, "initC2KWPCardtype gsm.ril.cardtypeset=" + cardTypeSet +
+                ", gsm.ril.cardtypeset.2=" + cardTypeSet_2);
+        boolean cardTypeReady = false;
+        int phoneCount = TelephonyManager.getDefault().getSimCount();
+        if (phoneCount == 1) {
+            // SS
+            Rlog.d(LOG_TAG, "single sim");
+            cardTypeReady = cardTypeSet.equals("1");
+        } else {
+            cardTypeReady = cardTypeSet.equals("1") && cardTypeSet_2.equals("1");
+        }
+        if (cardTypeReady) {
+            updateC2KWPCardtype(false);
+            SystemProperties.set("gsm.ril.init", "0");
+            log("set gsm.ril.init to 0");
+        } else {
+            InitCardtypeRunnable initCardtypeRunnable = new InitCardtypeRunnable();
+            postDelayed(initCardtypeRunnable, INITIAL_RETRY_INTERVAL_MSEC);
+            return;
+        }
+    }
 
     public int getIccApplicationChannel(int slotId, int family) {
         synchronized (mLock) {
