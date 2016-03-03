@@ -260,6 +260,9 @@ public class UiccController extends Handler {
         mCis = ci;
         mOEMHookSimRefresh = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_sim_refresh_for_dual_mode_card);
+        // MTK
+        // xen0n: seems the logic is entirely different... nevermind :-/
+        /*
         for (int i = 0; i < mCis.length; i++) {
             Integer index = new Integer(i);
             if (SystemProperties.getBoolean("persist.radio.apm_sim_not_pwdn", false)) {
@@ -279,9 +282,8 @@ public class UiccController extends Handler {
                 mCis[i].registerForIccRefresh(this, EVENT_REFRESH, index);
             }
         }
+        */
 
-        // MTK
-        // xen0n: seems the logic is entirely different... nevermind :-/
         mOperatorSpec = SystemProperties.get("ro.operator.optr", OPERATOR_OM);
         log("Operator Spec:" + mOperatorSpec);
         //Set mCi0 and mCi1
