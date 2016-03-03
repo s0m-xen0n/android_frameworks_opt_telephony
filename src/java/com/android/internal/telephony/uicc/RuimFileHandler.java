@@ -73,8 +73,16 @@ public final class RuimFileHandler extends IccFileHandler {
         case EF_CSIM_MSPL:
         case EF_CSIM_MLPL:
             return MF_SIM + DF_TELECOM + DF_MMSS;
+        // MTK
+        case EF_ICCID:
+            return MF_SIM;
         }
         return getCommonIccEFPath(efid);
+    }
+
+    protected String getEFPath(int efid, boolean is7FFF) {
+        logd("[RuimFH]GetEFPath : efid = " + efid + ", is7FFF = " + is7FFF);
+        return getEFPath(efid);
     }
 
     @Override

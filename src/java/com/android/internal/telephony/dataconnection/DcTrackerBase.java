@@ -2120,6 +2120,8 @@ public abstract class DcTrackerBase extends Handler {
             if (DBG) log("setInitialAttachApn: using firstApnSetting");
             initialAttachApnSetting = firstApnSetting;
         }
+        // xen0n: be compatible with MTK way (referencing member field instead of local var)
+        mInitialAttachApnSetting = initialAttachApnSetting;
 
         if (initialAttachApnSetting == null) {
             // MTK
@@ -2145,7 +2147,7 @@ public abstract class DcTrackerBase extends Handler {
             */
             if (DBG) log("setInitialAttachApn: X selected Apn=" + mInitialAttachApnSetting);
             if (MTK_DUAL_APN_SUPPORT == true) {
-                mPhone.mCi.setInitialAttachApn(mInitialAttachApnSetting.apn,
+                mPhone.mCi.setInitialAttachApn(initialAttachApnSetting.apn,
                         mInitialAttachApnSetting.protocol, mInitialAttachApnSetting.authType,
                         mInitialAttachApnSetting.user, mInitialAttachApnSetting.password,
                         operatorNumeric,

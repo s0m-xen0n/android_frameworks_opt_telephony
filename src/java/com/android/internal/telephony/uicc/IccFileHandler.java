@@ -496,7 +496,8 @@ public abstract class IccFileHandler extends Handler implements IccConstants {
 
     //***** Private Methods
 
-    private void sendResult(Message response, Object result, Throwable ex) {
+    // needed by MTK CsimFileHandler
+    protected void sendResult(Message response, Object result, Throwable ex) {
         if (response == null) {
             return;
         }
@@ -506,7 +507,8 @@ public abstract class IccFileHandler extends Handler implements IccConstants {
         response.sendToTarget();
     }
 
-    private boolean processException(Message response, AsyncResult ar) {
+    // ditto
+    protected boolean processException(Message response, AsyncResult ar) {
         IccException iccException;
         boolean flag = false;
         IccIoResult result = (IccIoResult) ar.result;

@@ -34,6 +34,11 @@ public final class UsimFileHandler extends IccFileHandler implements IccConstant
 
     @Override
     protected String getEFPath(int efid) {
+        // MTK
+        return getEFPath(efid, false);
+    }
+
+    protected String getEFPath(int efid, boolean is7FFF) {
         switch(efid) {
         case EF_SMS:
         case EF_EXT6:
@@ -48,16 +53,9 @@ public final class UsimFileHandler extends IccFileHandler implements IccConstant
         case EF_SPDI:
         case EF_SST:
         case EF_CFIS:
-        case EF_MAILBOX_CPHS:
-        case EF_VOICE_MAIL_INDICATOR_CPHS:
-        case EF_CFF_CPHS:
-        case EF_SPN_CPHS:
-        case EF_SPN_SHORT_CPHS:
         case EF_FDN:
         case EF_MSISDN:
         case EF_EXT2:
-        case EF_INFO_CPHS:
-        case EF_CSP_CPHS:
         case EF_GID1:
         case EF_LI:
         case EF_PLMNWACT:
@@ -66,6 +64,23 @@ public final class UsimFileHandler extends IccFileHandler implements IccConstant
         case EF_PBR:
             // we only support global phonebook.
             return MF_SIM + DF_TELECOM + DF_PHONEBOOK;
+        // MTK
+        case EF_ICCID:
+            return null;
+        case EF_SMSP:   // [ALPS01206315] Support EF_SMSP
+        case EF_SDN:
+        case EF_ECC:
+            return MF_SIM + DF_ADF;
+        case EF_MAILBOX_CPHS:
+        case EF_VOICE_MAIL_INDICATOR_CPHS:
+        case EF_CFF_CPHS:
+        case EF_SPN_CPHS:
+        case EF_SPN_SHORT_CPHS:
+        case EF_INFO_CPHS:
+        case EF_CSP_CPHS:
+            return DF_GSM;
+        case EF_PSISMSC:
+            return /*MF_SIM +*/ DF_TELECOM;
         }
         String path = getCommonIccEFPath(efid);
         if (path == null) {

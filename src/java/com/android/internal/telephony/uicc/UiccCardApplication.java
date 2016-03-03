@@ -26,6 +26,7 @@ import android.os.SystemProperties;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppType;
@@ -153,6 +154,7 @@ public class UiccCardApplication {
 
         mContext = c;
         mCi = ci;
+        mPhoneId = mUiccCard.getPhoneId();
 
         mIccFh = createIccFileHandler(as.app_type);
         mIccRecords = createIccRecords(as.app_type, mContext, mCi);
@@ -395,6 +397,11 @@ public class UiccCardApplication {
                         + mIccLockEnabled);
             } else {
                 attemptsRemaining = parsePinPukErrorResult(ar);
+                // MTK
+                if (attemptsRemaining == -1) {
+                    attemptsRemaining =
+                            SystemProperties.getInt(PROPERTY_PIN1_RETRY[getSlotId()], -1);
+                }
                 loge("Error change facility lock with exception " + ar.exception);
             }
             Message response = (Message)ar.userObj;
@@ -452,6 +459,12 @@ public class UiccCardApplication {
                     AsyncResult.forMessage(response).exception = ar.exception;
                     response.arg1 = attemptsRemaining;
                     response.sendToTarget();
+                    // MTK
+                    if (msg.what == EVENT_PUK1_CHANGE_PIN1_DONE) {
+                        queryPin1State();
+                    } else if (msg.what == EVENT_PUK2_CHANGE_PIN2_DONE) {
+                        queryFdn();
+                    }
                     break;
                 case EVENT_QUERY_FACILITY_FDN_DONE:
                     ar = (AsyncResult)msg.obj;
@@ -837,7 +850,8 @@ public class UiccCardApplication {
     public void supplyPuk (String puk, String newPin, Message onComplete) {
         synchronized (mLock) {
         mCi.supplyIccPukForApp(puk, newPin, mAid,
-                mHandler.obtainMessage(EVENT_PIN1_PUK1_DONE, onComplete));
+                // MTK
+                mHandler.obtainMessage(EVENT_PUK1_CHANGE_PIN1_DONE /* EVENT_PIN1_PUK1_DONE */, onComplete));
         }
     }
 
@@ -851,7 +865,8 @@ public class UiccCardApplication {
     public void supplyPuk2 (String puk2, String newPin2, Message onComplete) {
         synchronized (mLock) {
             mCi.supplyIccPuk2ForApp(puk2, newPin2, mAid,
-                    mHandler.obtainMessage(EVENT_PIN2_PUK2_DONE, onComplete));
+                    // MTK
+                    mHandler.obtainMessage(EVENT_PUK2_CHANGE_PIN2_DONE /* EVENT_PIN2_PUK2_DONE */, onComplete));
         }
     }
 
@@ -900,7 +915,16 @@ public class UiccCardApplication {
      *         false if ICC fdn service not available
      */
     public boolean getIccFdnAvailable() {
-        return mIccFdnAvailable;
+        // MTK
+        // return mIccFdnAvailable;
+        if (mIccRecords == null) {
+            if (DBG) log("isFdnExist mIccRecords == null");
+            return false;
+        }
+
+        Phone.IccServiceStatus iccSerStatus = mIccRecords.getSIMServiceStatus(Phone.IccService.FDN);
+        if (DBG) log("getIccFdnAvailable status: iccSerStatus");
+        return (iccSerStatus == Phone.IccServiceStatus.ACTIVATED);
     }
 
     /**

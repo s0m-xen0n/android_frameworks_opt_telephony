@@ -1742,6 +1742,8 @@ public class RIL extends BaseCommands implements CommandsInterface {
         if (RILJ_LOGD) {
             riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
                     + (on ? " on" : " off"));
+            // xen0n: debug unexpected calls
+            Rlog.d(RILJ_LOG_TAG, "stack trace as follows", new Exception());
         }
 
         send(rr);

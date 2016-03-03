@@ -45,6 +45,8 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import com.android.internal.telephony.RadioCapability;
+import com.android.internal.telephony.cdma.CdmaSmsBroadcastConfigInfo;
+import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
 import com.android.internal.telephony.gsm.SsData;
 import com.android.internal.telephony.uicc.IccRecords;
 import com.android.internal.telephony.uicc.SpnOverride;
@@ -623,6 +625,20 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
         // sendOemRilRequestRaw(OEMHOOK_EVT_HOOK_UPDATE_SUB_BINDING, 2, payload, response);
         Rlog.e(RILJ_LOG_TAG, "UpdateStackBinding: stub!");
+    }
+
+    @Override
+    public void setGsmBroadcastConfig(SmsBroadcastConfigInfo[] config, Message response) {
+        riljLog("RIL_REQUEST_GSM_SET_BROADCAST_CONFIG: not sending on MTK!");
+        AsyncResult.forMessage(response, null, CommandException.fromRilErrno(REQUEST_NOT_SUPPORTED));
+        response.sendToTarget();
+    }
+
+    @Override
+    public void setCdmaBroadcastConfig(CdmaSmsBroadcastConfigInfo[] configs, Message response) {
+        riljLog("RIL_REQUEST_CDMA_SET_BROADCAST_CONFIG: not sending on MTK!");
+        AsyncResult.forMessage(response, null, CommandException.fromRilErrno(REQUEST_NOT_SUPPORTED));
+        response.sendToTarget();
     }
 
     @Override
@@ -2378,6 +2394,24 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         }
     }
 
+    // MTK doesn't have the type parameter
+    // just ignore that
+    @Override
+    public void
+    supplyDepersonalization(String netpin, String type, Message result) {
+        RILRequest rr = RILRequest.obtain(RIL_REQUEST_ENTER_DEPERSONALIZATION_CODE, result);
+
+        if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) +
+                        " Type:" + type);
+        riljLog("supplyDepersonalization: type ignored on MTK!");
+
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeString(type);
+        // rr.mParcel.writeString(netpin);
+
+        send(rr);
+    }
+
     // VoLTE
     private Object
     responseDeactivateDataCall(Parcel p) {
@@ -2830,6 +2864,8 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest)
                 + " : " + networkType);
+        // xen0n: debug unexpected calls
+        Rlog.d(RILJ_LOG_TAG, "stack trace as follows", new Exception());
 
         send(rr);
     }
