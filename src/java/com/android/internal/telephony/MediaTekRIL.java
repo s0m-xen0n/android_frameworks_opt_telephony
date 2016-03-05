@@ -3886,6 +3886,8 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         if (RILJ_LOGD) {
             riljLog(rr.serialString() + "> " + requestToString(rr.mRequest) + " " + psSlot);
         }
+        // xen0n: debug unexpected calls
+        Rlog.d(RILJ_LOG_TAG, "stack trace as follows", new Exception());
         send(rr);
     }
 
