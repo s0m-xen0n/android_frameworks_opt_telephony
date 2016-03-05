@@ -183,10 +183,12 @@ public class SubscriptionInfoUpdater extends Handler {
         mPhone = phoneProxy;
         mSubscriptionManager = SubscriptionManager.from(mContext);
         sCi = ci;
-        SubscriptionHelper.init(context, ci);
+        // SubscriptionHelper.init(context, ci);  // unused and non-existent on MTK
         mUiccController = UiccController.getInstance();
-        mUiccController.registerForIccChanged(this, EVENT_ICC_CHANGED, null);
-        ModemStackController.getInstance().registerForStackReady(this, EVENT_STACK_READY, null);
+        // MTK: not existing on MTK and causes ArrayIndexOutOfBoundsException for SVLTE LTE phone
+        // mUiccController.registerForIccChanged(this, EVENT_ICC_CHANGED, null);
+        // this is unused by MTK as well
+        // ModemStackController.getInstance().registerForStackReady(this, EVENT_STACK_READY, null);
         for (int i = 0; i < PROJECT_SIM_NUM; i++) {
             sCardState[i] = CardState.CARDSTATE_ABSENT;
             sIsUpdateAvailable[i] = -1;
@@ -290,9 +292,11 @@ public class SubscriptionInfoUpdater extends Handler {
                 slotId = intent.getIntExtra(PhoneConstants.SLOT_KEY,
                         SubscriptionManager.INVALID_SIM_SLOT_INDEX);
                 logd("slotId: " + slotId + " simStatus: " + simStatus);
-                if (slotId == SubscriptionManager.INVALID_SIM_SLOT_INDEX) {
-                    return;
-                }
+                // MTK: non-existent checks
+                // if (slotId == SubscriptionManager.INVALID_SIM_SLOT_INDEX) {
+                //     return;
+                // }
+                /*
                 if (IccCardConstants.INTENT_VALUE_ICC_READY.equals(simStatus)
                         || IccCardConstants.INTENT_VALUE_ICC_LOCKED.equals(simStatus)) {
                     //TODO: Use RetryManager to limit number of retries and do a exponential backoff
@@ -301,7 +305,7 @@ public class SubscriptionInfoUpdater extends Handler {
                     }
                 } else if (IccCardConstants.INTENT_VALUE_ICC_LOADED.equals(simStatus)) {
                     sendMessage(obtainMessage(EVENT_SIM_LOADED, slotId, -1));
-                } else if (IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(simStatus)) {
+                } else */ if (IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(simStatus)) {
                     sendMessage(obtainMessage(EVENT_SIM_ABSENT, slotId, -1));
                 } else {
                     logd("Ignoring simStatus: " + simStatus);
