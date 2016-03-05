@@ -341,8 +341,9 @@ public class SubscriptionController extends ISub.Stub {
      private void broadcastSimInfoContentChanged() {
         Intent intent = new Intent(TelephonyIntents.ACTION_SUBINFO_CONTENT_CHANGE);
         mContext.sendBroadcast(intent);
-        intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
-        mContext.sendBroadcast(intent);
+        // MTK
+        // intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        // mContext.sendBroadcast(intent);
      }
 
      private boolean checkNotifyPermission(String method) {
@@ -845,8 +846,10 @@ public class SubscriptionController extends ISub.Stub {
                         // If subId equal with defaultSubId for adding the first SUB record
                         // This sub is active so that the default fall back sub is not set
                         if (!SubscriptionManager.isValidSubscriptionId(defaultSubId)
-                                || subIdCountMax == 1 || defaultSubId == subId
-                                || defaultSubId == DUMMY_SUB_ID_BASE) {
+                                || subIdCountMax == 1 /* || defaultSubId == subId
+                                || defaultSubId == DUMMY_SUB_ID_BASE */
+                                // MTK
+                                || !isActiveSubId(defaultSubId)) {
                             setDefaultFallbackSubId(subId);
                         }
                         // If single sim device, set this subscription as the default for everything
@@ -1907,8 +1910,9 @@ public class SubscriptionController extends ISub.Stub {
         intent.putExtra(TelephonyIntents.EXTRA_INT_CONTENT, subStatus);
         intent.putExtra(TelephonyIntents.EXTRA_STRING_CONTENT, "None");
         mContext.sendBroadcast(intent);
-        intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
-        mContext.sendBroadcast(intent);
+        // MTK doesn't even have this method...
+        // intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        // mContext.sendBroadcast(intent);
 
         return result;
     }
