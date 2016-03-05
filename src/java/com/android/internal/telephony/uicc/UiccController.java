@@ -345,6 +345,17 @@ public class UiccController extends Handler {
     // Easy to use API
     public IccRecords getIccRecords(int phoneId, int family) {
         synchronized (mLock) {
+            // MTK
+            // for SVLTE IR, change phoneId to Phone0 when give LTE phone
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_1) {
+                    phoneId = PhoneConstants.SIM_ID_1;
+                    log("getIccRecords phone id 101 change to:" + phoneId);
+                } else if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_2) {
+                    phoneId = PhoneConstants.SIM_ID_2;
+                    log("getIccRecords phone id 102 change to:" + phoneId);
+                }
+            }
             UiccCardApplication app = getUiccCardApplication(phoneId, family);
             if (app != null) {
                 return app.getIccRecords();
@@ -803,6 +814,16 @@ public class UiccController extends Handler {
     // Easy to use API
     public UiccCardApplication getUiccCardApplication(int phoneId, int family) {
         synchronized (mLock) {
+            // MTK
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_1) {
+                    phoneId = PhoneConstants.SIM_ID_1;
+                    log("getUiccCardApplication phone id 101 change to:" + phoneId);
+                } else if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_2) {
+                    phoneId = PhoneConstants.SIM_ID_2;
+                    log("getUiccCardApplication phone id 102 change to:" + phoneId);
+                }
+            }
             if (isValidCardIndex(phoneId)) {
                 UiccCard c = mUiccCards[phoneId];
                 if (c != null) {
@@ -827,12 +848,54 @@ public class UiccController extends Handler {
 
         IccCardStatus status = (IccCardStatus)ar.result;
 
-        if (mUiccCards[index] == null) {
-            //Create new card
-            mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index);
+        // MTK
+        if (index == INDEX_SVLTE) {
+            // SVLTE PS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE PS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status,
+                    mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE PS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+                mUiccCards[mSvlteIndex].registerCdmaCardImsiDone(index);
+            }
+        } else if (index == mSvlteIndex) {
+            //SVLTE CS
+            if (mUiccCards[mSvlteIndex] == null) {
+                //Create new card
+                log("new SVLTE CS UiccApplication");
+                mUiccCards[mSvlteIndex] = new UiccCard(mContext, mCis[mSvlteIndex], status,
+                    mSvlteIndex, mSvlteCi);
+            } else {
+                //Update already existing card
+                log("update SVLTE CS UiccApplication");
+                //mUiccCards[mSvlteIndex].setSvlteFlag(true);
+                mUiccCards[mSvlteIndex].update(mContext, mCis[mSvlteIndex] , status);
+                mUiccCards[mSvlteIndex].registerCdmaCardImsiDone(index);
+            }
         } else {
-            //Update already existing card
-            mUiccCards[index].update(mContext, mCis[index] , status);
+            // common flow
+            if (mUiccCards[index] == null) {
+                //Create new card
+                log("new UiccApplication index=" + index);
+                mUiccCards[index] = new UiccCard(mContext, mCis[index], status, index);
+
+/*
+            // Update the UiccCard in base class, so that if someone calls
+            // UiccManager.getUiccCard(), it will return the default card.
+            if (index == PhoneConstants.DEFAULT_CARD_INDEX) {
+                mUiccCard = mUiccCards[index];
+            }
+*/
+            } else {
+                //Update already existing card
+                log("update UiccApplication index=" + index);
+                mUiccCards[index].update(mContext, mCis[index] , status);
+            }
         }
 
         if (DBG) log("Notifying IccChangedRegistrants");
@@ -841,7 +904,10 @@ public class UiccController extends Handler {
     }
 
     private boolean isValidCardIndex(int index) {
-        return (index >= 0 && index < mUiccCards.length);
+        // MTK
+        log("isValidCardIndex index = " + index);
+        return (index >= 0 && index < mUiccCards.length)
+            || (index == INDEX_SVLTE && CdmaFeatureOptionUtils.isCdmaLteDcSupport());
     }
 
     private void log(String string) {
