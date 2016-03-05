@@ -47,6 +47,7 @@ import com.android.internal.telephony.dataconnection.DdsSchedulerAc;
 import android.provider.BaseColumns;
 import android.provider.Settings;
 import android.telecom.TelecomManager;
+import android.telephony.RadioAccessFamily;
 import android.telephony.Rlog;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
@@ -158,14 +159,14 @@ public class SubscriptionController extends ISub.Stub {
     private int[] colorArr;
 
     private static final int EVENT_SET_DEFAULT_DATA_DONE = 1;
-    private DataConnectionHandler mDataConnectionHandler;
+    // private DataConnectionHandler mDataConnectionHandler;  // MTK
     private  DctController mDctController;
 
     private HashMap<Integer, OnDemandDdsLockNotifier> mOnDemandDdsLockNotificationRegistrants =
         new HashMap<Integer, OnDemandDdsLockNotifier>();
 
-    private DdsScheduler mScheduler;
-    private DdsSchedulerAc mSchedulerAc;
+    // private DdsScheduler mScheduler;
+    // private DdsSchedulerAc mSchedulerAc;
 
     // MTK
     private static final int EVENT_WRITE_MSISDN_DONE = 2;  // xen0n
@@ -252,13 +253,15 @@ public class SubscriptionController extends ISub.Stub {
         registerReceiverIfNeeded();
 
         if (DBG) logdl("[SubscriptionController] init by Context");
+        // MTK: entirely different dds switch impl
+        /*
         mDataConnectionHandler = new DataConnectionHandler();
 
         mScheduler = DdsScheduler.getInstance();
 
         mSchedulerAc = new DdsSchedulerAc();
         mSchedulerAc.connect(mContext, mDataConnectionHandler, mScheduler.getHandler());
-
+        */
     }
 
     public int getSubIdFromNetworkRequest(NetworkRequest n) {
@@ -280,12 +283,16 @@ public class SubscriptionController extends ISub.Stub {
 
     public void startOnDemandDataSubscriptionRequest(NetworkRequest n) {
         logd("startOnDemandDataSubscriptionRequest = " + n);
-        mSchedulerAc.allocateDds(n);
+        // mSchedulerAc.allocateDds(n);
+        // MTK TODO: wire up the logic
+        loge("startOnDemandDataSubscriptionRequest: MTK TODO!");
     }
 
     public void stopOnDemandDataSubscriptionRequest(NetworkRequest n) {
         logd("stopOnDemandDataSubscriptionRequest = " + n);
-        mSchedulerAc.freeDds(n);
+        // mSchedulerAc.freeDds(n);
+        // MTK TODO: ditto
+        loge("stopOnDemandDataSubscriptionRequest: MTK TODO!");
     }
 
     private boolean isSubInfoReady() {
@@ -1226,13 +1233,42 @@ public class SubscriptionController extends ISub.Stub {
             subId = getDefaultSubId();
         }
 
+        // MTK-START
+        // Add the special handle for LTE_DC_SUB_ID
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            if (subId == SubscriptionManager.LTE_DC_SUB_ID_1) {
+                logd("[getPhoneId]- subId is LTE_DC_SUB_ID_1.");
+                return 0;
+            } else if (subId == SubscriptionManager.LTE_DC_SUB_ID_2) {
+                logd("[getPhoneId]- subId is LTE_DC_SUB_ID_2.");
+                return 1;
+            }
+        }
+        // MTK-END
+
+        // MTK
         if (!SubscriptionManager.isValidSubscriptionId(subId)) {
-            return SubscriptionManager.INVALID_PHONE_INDEX;
+            int phoneId;
+            if (subId > SubscriptionManager.DUMMY_SUBSCRIPTION_ID_BASE
+                - getActiveSubInfoCountMax()) {
+                phoneId = (int) (SubscriptionManager.DUMMY_SUBSCRIPTION_ID_BASE  - subId);
+            } else {
+                phoneId = SubscriptionManager.INVALID_PHONE_INDEX;
+            }
+
+            if (DBG) {
+                logdl("[getPhoneId]- invalid subId = " + subId + " return = " + phoneId);
+            }
+            return phoneId;
         }
 
-        if (subId >= DUMMY_SUB_ID_BASE) {
-            logd("getPhoneId,  received dummy subId " + subId);
-            return subId - DUMMY_SUB_ID_BASE;
+        int size = mSlotIdxToSubId.size();
+        if (size == 0) {
+            int phoneId = mDefaultPhoneId;
+            if (DBG) {
+                logdl("[getPhoneId]- no sims, returning default phoneId, subId =" + subId);
+            }
+            return phoneId;
         }
 
         // FIXME: Assumes phoneId == slotId
@@ -1437,10 +1473,15 @@ public class SubscriptionController extends ISub.Stub {
     }
 
     public int getCurrentDds() {
-        return mScheduler.getCurrentDds();
+        // return mScheduler.getCurrentDds();
+        // MTK TODO: wire MTK logic into this
+        final int result = getDefaultDataSubId();
+        loge("getCurrentDds: MTK TODO; ret=" + result);
+        return result;
     }
 
-
+    // MTK: useless in MTK
+    /*
     private void updateDataSubId(AsyncResult ar) {
         Integer subId = (Integer)ar.result;
         int reqStatus = PhoneConstants.FAILURE;
@@ -1456,6 +1497,7 @@ public class SubscriptionController extends ISub.Stub {
 
         updateAllDataConnectionTrackers();
     }
+    */
 
     public void setDefaultDataSubId(int subId) {
         if (subId == SubscriptionManager.DEFAULT_SUBSCRIPTION_ID) {
@@ -1463,13 +1505,52 @@ public class SubscriptionController extends ISub.Stub {
         }
         if (DBG) logdl("[setDefaultDataSubId] subId=" + subId);
 
-        if (mDctController == null) {
-            mDctController = DctController.getInstance();
-            mDctController.registerForDefaultDataSwitchInfo(mDataConnectionHandler,
-                    EVENT_SET_DEFAULT_DATA_DONE, null);
-        }
-        mDctController.setDefaultDataSubId(subId);
+        // MTK rewritten
+        boolean isLteSupport = (SystemProperties.getInt("ro.mtk_lte_support", 0) == 1);
+        int len = sProxyPhones.length;
+        logdl("[setDefaultDataSubId] num phones=" + len);
 
+        RadioAccessFamily[] rafs = new RadioAccessFamily[len];
+        for (int phoneId = 0; phoneId < len; phoneId++) {
+            PhoneProxy phone = sProxyPhones[phoneId];
+            int raf = phone.getRadioAccessFamily();
+            int id = phone.getSubId();
+            logdl("[setDefaultDataSubId] phoneId=" + phoneId + " subId=" + id + " RAF=" + raf);
+            raf |= RadioAccessFamily.RAF_GSM;
+            if (id == subId) {
+                raf |= RadioAccessFamily.RAF_UMTS;
+                if (isLteSupport) {
+                    raf |= RadioAccessFamily.RAF_LTE;
+                }
+            } else {
+                raf &= ~RadioAccessFamily.RAF_UMTS;
+                if (isLteSupport) {
+                    raf &= ~RadioAccessFamily.RAF_LTE;
+                }
+            }
+            logdl("[setDefaultDataSubId] reqRAF=" + raf);
+
+            // @M: it cause SIM switch fail, skip it
+            // Set the raf to the maximum of the requested and the user's preferred.
+            //int networkType = PhoneFactory.calculatePreferredNetworkType(mContext, id);
+            //logdl("[setDefaultDataSubId] networkType=" + networkType);
+            //raf &= RadioAccessFamily.getRafFromNetworkType(networkType);
+
+            logdl("[setDefaultDataSubId] newRAF=" + raf);
+            rafs[phoneId] = new RadioAccessFamily(phoneId, raf);
+        }
+        try {
+            ProxyController.getInstance().setRadioCapability(rafs);
+            // FIXME is this still needed?
+            updateAllDataConnectionTrackers();
+
+            Settings.Global.putInt(mContext.getContentResolver(),
+                    Settings.Global.MULTI_SIM_DATA_CALL_SUBSCRIPTION, subId);
+            broadcastDefaultDataSubIdChanged(subId);
+        } catch (RuntimeException e) {
+            logdl("[setDefaultDataSubId] setRadioCapability: Runtime Exception");
+            e.printStackTrace();
+        }
     }
 
     private void setDefaultDataSubNetworkType(int subId) {
@@ -1586,6 +1667,8 @@ public class SubscriptionController extends ISub.Stub {
         }
     }
 
+    // MTK: useless
+    /*
     private class DataConnectionHandler extends Handler {
         @Override
         public void handleMessage(Message msg) {
@@ -1601,6 +1684,7 @@ public class SubscriptionController extends ISub.Stub {
             }
         }
     }
+    */
 
     public void handleSubscriptionInfoReady() {
         mSubInfoReady = true;
