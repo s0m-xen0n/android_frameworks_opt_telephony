@@ -687,15 +687,20 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
         }
         switch (msg.what) {
             case EVENT_RADIO_AVAILABLE:
+                // MTK
+                // maybe this is needed despite being guarded by non-BSP check
+                RadioManager.getInstance().notifyRadioAvailable(mPhone.getPhoneId());
+
                 //this is unnecessary
                 //setPowerStateToDesired();
                 break;
 
             case EVENT_SIM_READY:
-                // Set the network type, in case the radio does not restore it.
-                int networkType = PhoneFactory.calculatePreferredNetworkType(
-                        mPhone.getContext(), mPhone.getPhoneId());
-                mCi.setPreferredNetworkType(networkType, null);
+                // MTK
+                // // Set the network type, in case the radio does not restore it.
+                // int networkType = PhoneFactory.calculatePreferredNetworkType(
+                //         mPhone.getContext(), mPhone.getPhoneId());
+                // mCi.setPreferredNetworkType(networkType, null);
 
                 boolean skipRestoringSelection = mPhone.getContext().getResources().getBoolean(
                         com.android.internal.R.bool.skip_restoring_network_selection);
@@ -748,6 +753,8 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                     mSignalStrengthChangedRegistrants.notifyResult(
                             new SignalStrength((SignalStrength)ar.result));
                 }
+                notifySignalStrengthChanged(ar);
+
                 onSignalStrengthResult(ar, true);
                 queueNextSignalStrengthPoll();
 
@@ -791,6 +798,13 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 break;
 
             case EVENT_POLL_SIGNAL_STRENGTH:
+                // MTK
+                if (mDontPollSignalStrength) {
+                    // The radio is telling us about signal strength changes
+                    // we don't have to ask it
+                    return;
+                }
+
                 // Just poll signal strength...not part of pollState()
 
                 mCi.getSignalStrength(obtainMessage(EVENT_GET_SIGNAL_STRENGTH));
@@ -814,6 +828,13 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 // The radio is telling us about signal strength changes
                 // we don't have to ask it
                 mDontPollSignalStrength = true;
+                // MTK
+                if ((ar.exception == null) && (ar.result != null)) {
+                    mSignalStrengthChangedRegistrants.notifyResult(
+                            new SignalStrength((SignalStrength)ar.result));
+                }
+                ///M: SVLTE signal strength support.@{
+                notifySignalStrengthChanged(ar);
 
                 onSignalStrengthResult(ar, true);
                 break;
@@ -825,6 +846,9 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
 
                 updatePhoneObject();
                 updateSpnDisplay();
+                ///M: SVLTE signal strength support.@{
+                notifyServiceStateChanged();
+                ///M: SVLTE signal strength support.@}
                 break;
 
             case EVENT_LOCATION_UPDATES_ENABLED:
@@ -917,6 +941,87 @@ final class GsmServiceStateTracker extends ServiceStateTracker {
                 ar = (AsyncResult) msg.obj;
                 onPsNetworkStateChangeResult(ar);
                 pollState();
+                break;
+
+            case EVENT_INVALID_SIM_INFO: //ALPS00248788
+                log("handle EVENT_INVALID_SIM_INFO");
+                ar = (AsyncResult) msg.obj;
+                onInvalidSimInfoReceived(ar);
+                break;
+            case EVENT_IMEI_LOCK: //ALPS00296298
+                log("handle EVENT_IMEI_LOCK");
+                mIsImeiLock = true;
+                break;
+            case EVENT_ICC_REFRESH:
+                log("handle EVENT_ICC_REFRESH");
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception == null) {
+                    IccRefreshResponse res = ((IccRefreshResponse) ar.result);
+                    if (res.refreshResult == 6) {
+                        /* ALPS00949490 */
+                        mLastRegisteredPLMN = null;
+                        mLastPSRegisteredPLMN = null;
+                        log("Reset mLastRegisteredPLMN and mLastPSRegisteredPLMN");
+                    }
+                }
+                break;
+            case EVENT_ENABLE_EMMRRS_STATUS:
+                log("handle EVENT_ENABLE_EMMRRS_STATUS");
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception == null) {
+                    String data[] = (String []) ar.result;
+                    log("EVENT_ENABLE_EMMRRS_STATUS, data[0] is : " + data[0]);
+                    log("EVENT_ENABLE_EMMRRS_STATUS, einfo value is : " + data[0].substring(8));
+                    int oldValue = Integer.valueOf(data[0].substring(8));
+                    int value = oldValue | 0x80;
+                    log("EVENT_ENABLE_EMMRRS_STATUS, einfo value change is : " + value);
+                    if (oldValue != value) {
+                        setEINFO(value, null);
+                    }
+                }
+                log("EVENT_ENABLE_EMMRRS_STATUS end");
+                break;
+            case EVENT_DISABLE_EMMRRS_STATUS:
+                log("handle EVENT_DISABLE_EMMRRS_STATUS");
+                ar = (AsyncResult) msg.obj;
+                if (ar.exception == null) {
+                    String data[] = (String []) ar.result;
+                    log("EVENT_DISABLE_EMMRRS_STATUS, data[0] is : " + data[0]);
+                    log("EVENT_DISABLE_EMMRRS_STATUS, einfo value is : " + data[0].substring(8));
+
+                    try {
+                        int oldValue = Integer.valueOf(data[0].substring(8));
+                        int value = oldValue & 0xff7f;
+                        log("EVENT_DISABLE_EMMRRS_STATUS, einfo value change is : " + value);
+                        if (oldValue != value) {
+                            setEINFO(value, null);
+                        }
+                    } catch (NumberFormatException ex) {
+                        loge("Unexpected einfo value : " + ex);
+                    }
+                }
+                log("EVENT_DISABLE_EMMRRS_STATUS end");
+                break;
+            case EVENT_FEMTO_CELL_INFO:
+                log("handle EVENT_FEMTO_CELL_INFO");
+                ar = (AsyncResult) msg.obj;
+                onFemtoCellInfoResult(ar);
+                break;
+            case EVENT_IMS_REGISTRATION_INFO:
+                log("handle EVENT_IMS_REGISTRATION_INFO");
+                ar = (AsyncResult) msg.obj;
+                /// M: Simulate IMS Registration @{
+                if (SystemProperties.getInt("persist.ims.simulate", 0) == 1) {
+                    ((int[]) ar.result)[0] = (mImsRegistry ? 1 : 0);
+                    log("Override EVENT_IMS_REGISTRATION_INFO: new mImsRegInfo=" +
+                            ((int[]) ar.result)[0]);
+                }
+                /// @}
+
+                if (((int[]) ar.result)[1] > 0) {
+                    mImsExtInfo = ((int[]) ar.result)[1];
+                }
+                log("ImsRegistrationInfoResult [" + mImsRegInfo + ", " + mImsExtInfo + "]");
                 break;
 
             default:

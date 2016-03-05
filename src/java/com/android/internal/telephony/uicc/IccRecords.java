@@ -56,6 +56,8 @@ public abstract class IccRecords extends Handler implements IccConstants {
     protected CommandsInterface mCi;
     protected IccFileHandler mFh;
     protected UiccCardApplication mParentApp;
+    // MTK
+    protected TelephonyManager mTelephonyManager;
 
     protected RegistrantList mRecordsLoadedRegistrants = new RegistrantList();
     protected RegistrantList mImsiReadyRegistrants = new RegistrantList();
@@ -196,6 +198,9 @@ public abstract class IccRecords extends Handler implements IccConstants {
             mCi.registerForIccRefresh(this, EVENT_REFRESH, null);
         }
         mSpnOverride = new SpnOverride();
+        // MTK
+        mTelephonyManager = (TelephonyManager) mContext.getSystemService(
+                Context.TELEPHONY_SERVICE);
     }
 
     /**

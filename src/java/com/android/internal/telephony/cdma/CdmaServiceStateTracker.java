@@ -443,10 +443,11 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
         case EVENT_RUIM_READY:
             // MTK
             setDeviceRatMode(mPhone.getPhoneId());
+            mIsSubscriptionFromRuim = true;
 
-            int networkType = PhoneFactory.calculatePreferredNetworkType(
-                    mPhone.getContext(), mPhone.getPhoneId());
-            mCi.setPreferredNetworkType(networkType, null);
+            // int networkType = PhoneFactory.calculatePreferredNetworkType(
+            //         mPhone.getContext(), mPhone.getPhoneId());
+            // mCi.setPreferredNetworkType(networkType, null);
 
             // MTK
             if (mPhone.getLteOnCdmaMode() == PhoneConstants.LTE_ON_CDMA_TRUE) {
@@ -477,6 +478,9 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
 
             // Only support automatic selection mode in CDMA.
             mCi.getNetworkSelectionMode(obtainMessage(EVENT_POLL_STATE_NETWORK_SELECTION_MODE));
+
+            // MTK
+            mIsSubscriptionFromRuim = false;
 
             // For Non-RUIM phones, the subscription information is stored in
             // Non Volatile. Here when Non-Volatile is ready, we can poll the CDMA

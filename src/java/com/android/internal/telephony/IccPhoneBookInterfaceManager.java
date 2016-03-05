@@ -485,5 +485,17 @@ public abstract class IccPhoneBookInterfaceManager {
         }
         return spareEmailCount;
     }
+
+    // MTK
+
+    public void updateIccRecords(IccRecords iccRecords) {
+        if (iccRecords != null) {
+            mAdnCache = iccRecords.getAdnCache();
+            logd("[updateIccRecords] Set mAdnCache value");
+        } else {
+            mAdnCache = null;
+            logd("[updateIccRecords] Set mAdnCache value to null");
+        }
+    }
 }
 

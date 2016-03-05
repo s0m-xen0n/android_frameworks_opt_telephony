@@ -141,10 +141,12 @@ public class DataSubSelector {
 
     private void onSubInfoReady(Intent intent) {
 
+        /*
         if (BSP_PACKAGE) {
             log("Don't support BSP Package.");
             return;
         }
+        */
         /*
         if (mOperatorSpec.equals(OPERATOR_OP01)) {
             subSelectorForOp01(intent);
@@ -152,7 +154,7 @@ public class DataSubSelector {
             subSelectorForOp02(intent);
         } else if (mOperatorSpec.equals(OPERATOR_OP09)) {
             subSelectorForOp09(intent);
-        } else if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+        } else */ if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
             // wait for ACTION_RADIO_TECHNOLOGY_CHANGED
             //Turn off data if new SIM detected.
             turnOffNewSimData(intent);
@@ -161,7 +163,6 @@ public class DataSubSelector {
         }
 
         updateDataEnableProperty();
-        */
     }
 
     private void subSelectorForOm(Intent intent) {
@@ -379,6 +380,35 @@ public class DataSubSelector {
                     }
                 }
             }
+        }
+    }
+
+    private void updateDataEnableProperty() {
+        TelephonyManager telephony = TelephonyManager.getDefault();
+        boolean dataEnabled = false;
+        String dataOnIccid = "0";
+        int subId = 0;
+
+        for (int i = 0; i < mPhoneNum; i++) {
+            // M: [C2K][IRAT] Change LTE_DC_SUB_ID to IRAT support slot sub ID for IRAT.
+            subId = PhoneFactory.getPhone(i).getSubId();
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                subId = SvlteUtils.getSvlteSubIdBySubId(subId);
+            }
+
+            if (telephony != null) {
+               dataEnabled = telephony.getDataEnabled(subId);
+            }
+
+            if (dataEnabled) {
+                dataOnIccid = SystemProperties.get(PROPERTY_ICCID[i], "0");
+            } else {
+                dataOnIccid = "0";
+            }
+
+            log("setUserDataProperty:" + dataOnIccid);
+            TelephonyManager.getDefault().setTelephonyProperty(i, PROPERTY_MOBILE_DATA_ENABLE,
+                    dataOnIccid);
         }
     }
 

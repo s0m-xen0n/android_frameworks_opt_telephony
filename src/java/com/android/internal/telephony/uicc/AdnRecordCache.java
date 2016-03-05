@@ -20,6 +20,7 @@ import android.os.AsyncResult;
 import android.os.Handler;
 import android.os.Message;
 import android.text.TextUtils;
+import android.telephony.Rlog;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -27,15 +28,30 @@ import com.android.internal.telephony.gsm.UsimPhoneBookManager;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
+
+import com.android.internal.telephony.CommandException;
+import com.android.internal.telephony.CommandsInterface;
+import com.android.internal.telephony.RILConstants;
+
+import com.mediatek.internal.telephony.uicc.AlphaTag;
+import com.mediatek.internal.telephony.uicc.UsimGroup;
+import com.mediatek.internal.telephony.uicc.UsimPBMemInfo;
 
 /**
  * {@hide}
  */
 public final class AdnRecordCache extends Handler implements IccConstants {
+
+    static final String LOG_TAG = "AdnRecordCache";
+
     //***** Instance Variables
 
     private IccFileHandler mFh;
     private UsimPhoneBookManager mUsimPhoneBookManager;
+    // MTK
+    private CommandsInterface mCi;
+    private UiccCardApplication mCurrentApp;
 
     private int mAdncountofIcc = 0;
 
@@ -58,6 +74,19 @@ public final class AdnRecordCache extends Handler implements IccConstants {
     // *****USIM TAG Constants
     private static final int USIM_EFANR_TAG   = 0xC4;
     private static final int USIM_EFEMAIL_TAG = 0xCA;
+
+    // MTK
+    public static int MAX_PHB_NAME_LENGTH = 60;
+    public static int MAX_PHB_NUMBER_LENGTH = 40;
+    public static int MAX_PHB_NUMBER_ANR_LENGTH = 20;
+    public static int MAX_PHB_NUMBER_ANR_COUNT = 3;
+
+    private final Object mLock = new Object();
+    boolean mSuccess = false;
+    private boolean mLocked = false;
+
+    private static int ADN_FILE_SIZE = 250;
+
     //***** Constructor
 
 
@@ -65,6 +94,18 @@ public final class AdnRecordCache extends Handler implements IccConstants {
     AdnRecordCache(IccFileHandler fh) {
         mFh = fh;
         mUsimPhoneBookManager = new UsimPhoneBookManager(mFh, this);
+        // MTK
+        mCi = null;
+        mCurrentApp = null;
+    }
+
+    // MTK
+    AdnRecordCache(IccFileHandler fh, CommandsInterface ci, UiccCardApplication app) {
+        mFh = fh;
+        mCi = ci;
+        mCurrentApp = app;
+        // MTK TODO
+        mUsimPhoneBookManager = new UsimPhoneBookManager(mFh, this/*, ci, app*/);
     }
 
     //***** Called from SIMRecords
@@ -73,6 +114,8 @@ public final class AdnRecordCache extends Handler implements IccConstants {
      * Called from SIMRecords.onRadioNotAvailable and SIMRecords.handleSimRefresh.
      */
     public void reset() {
+        // MTK
+        logd("reset");
         mAdnLikeFiles.clear();
         mUsimPhoneBookManager.reset();
 
@@ -92,6 +135,14 @@ public final class AdnRecordCache extends Handler implements IccConstants {
     }
 
     private void clearUserWriters() {
+        // MTK
+        logd("clearUserWriters,mLocked " + mLocked);
+        if (mLocked) {
+            synchronized (mLock) {
+                mLock.notifyAll();
+            }
+            mLocked = false;
+        }
         int size = mUserWriteResponse.size();
         for (int i = 0; i < size; i++) {
             sendErrorResponse(mUserWriteResponse.valueAt(i), "AdnCace reset");
@@ -126,9 +177,21 @@ public final class AdnRecordCache extends Handler implements IccConstants {
         }
     }
 
+    // MTK
     private void sendErrorResponse(Message response, String errString) {
+
+        sendErrorResponse(
+                response,
+                errString,
+                RILConstants.GENERIC_FAILURE);
+    }
+
+    private void sendErrorResponse(Message response, String errString, int ril_errno) {
+
+        CommandException e = CommandException.fromRilErrno(ril_errno);
+
         if (response != null) {
-            Exception e = new RuntimeException(errString);
+            logd(errString);
             AsyncResult.forMessage(response).exception = e;
             response.sendToTarget();
         }
@@ -153,6 +216,7 @@ public final class AdnRecordCache extends Handler implements IccConstants {
             return;
         }
 
+        // MTK TODO
         Message pendingResponse = mUserWriteResponse.get(efid);
         if (pendingResponse != null) {
             sendErrorResponse(response, "Have pending update for EF:" + efid);
@@ -612,4 +676,143 @@ public final class AdnRecordCache extends Handler implements IccConstants {
     public int getUsimAdnCount() {
         return mUsimPhoneBookManager.getUsimAdnCount();
     }
+
+    // MTK
+    protected void logd(String msg) {
+        Rlog.d(LOG_TAG, "[AdnRecordCache] " + msg);
+    }
+
+    /*
+    public List<UsimGroup> getUsimGroups() {
+        return mUsimPhoneBookManager.getUsimGroups();
+    }
+
+    public String getUsimGroupById(int nGasId) {
+        return mUsimPhoneBookManager.getUsimGroupById(nGasId);
+    }
+
+    public boolean removeUsimGroupById(int nGasId) {
+        return mUsimPhoneBookManager.removeUsimGroupById(nGasId);
+    }
+
+    public int insertUsimGroup(String grpName) {
+        return mUsimPhoneBookManager.insertUsimGroup(grpName);
+    }
+
+    public int updateUsimGroup(int nGasId, String grpName) {
+        return mUsimPhoneBookManager.updateUsimGroup(nGasId, grpName);
+    }
+
+    public boolean addContactToGroup(int adnIndex, int grpIndex) {
+        return mUsimPhoneBookManager.addContactToGroup(adnIndex, grpIndex);
+    }
+
+    public boolean removeContactFromGroup(int adnIndex, int grpIndex) {
+        return mUsimPhoneBookManager.removeContactFromGroup(adnIndex, grpIndex);
+    }
+
+    public boolean updateContactToGroups(int adnIndex, int[] grpIdList) {
+        return mUsimPhoneBookManager.updateContactToGroups(adnIndex, grpIdList);
+    }
+
+    public boolean moveContactFromGroupsToGroups(int adnIndex, int[] fromGrpIdList, int[] toGrpIdList) {
+        return mUsimPhoneBookManager.moveContactFromGroupsToGroups(adnIndex, fromGrpIdList, toGrpIdList);
+    }
+
+    public int hasExistGroup(String grpName) {
+        return mUsimPhoneBookManager.hasExistGroup(grpName);
+    }
+
+    public int getUsimGrpMaxNameLen() {
+        return mUsimPhoneBookManager.getUsimGrpMaxNameLen();
+    }
+
+    public int getUsimGrpMaxCount() {
+        return mUsimPhoneBookManager.getUsimGrpMaxCount();
+    }
+
+    private void dumpAdnLikeFile() {
+        int size = mAdnLikeFiles.size();
+        logd("dumpAdnLikeFile size " + size);
+        int key;
+        for (int i = 0; i < size; i++) {
+            key = mAdnLikeFiles.keyAt(i);
+
+            ArrayList<AdnRecord> records = mAdnLikeFiles.get(key);
+            logd("dumpAdnLikeFile index " + i + " key " + key + "records size " + records.size());
+            for (int j = 0; j < records.size(); j++) {
+                AdnRecord record = records.get(j);
+                logd("mAdnLikeFiles[" + j + "]=" + record);
+            }
+        }
+    }
+
+    public ArrayList<AlphaTag> getUsimAasList() {
+        return mUsimPhoneBookManager.getUsimAasList();
+    }
+
+    public String getUsimAasById(int index) {
+        // TODO
+        return mUsimPhoneBookManager.getUsimAasById(index, 0);
+    }
+
+    public boolean removeUsimAasById(int index, int pbrIndex) {
+        return mUsimPhoneBookManager.removeUsimAasById(index, pbrIndex);
+    }
+
+    public int insertUsimAas(String aasName) {
+        return mUsimPhoneBookManager.insertUsimAas(aasName);
+    }
+
+    public boolean updateUsimAas(int index, int pbrIndex, String aasName) {
+        return mUsimPhoneBookManager.updateUsimAas(index, pbrIndex, aasName);
+    }
+    */
+
+    /**
+     * @param adnIndex: ADN index
+     * @param aasIndex: change AAS to the value refered by aasIndex, -1 means
+     *            remove
+     * @return
+     */
+    /*
+    public boolean updateAdnAas(int adnIndex, int aasIndex) {
+        return mUsimPhoneBookManager.updateAdnAas(adnIndex, aasIndex);
+    }
+
+    public int getUsimAasMaxCount() {
+        return mUsimPhoneBookManager.getUsimAasMaxCount();
+    }
+
+    public int getUsimAasMaxNameLen() {
+        return mUsimPhoneBookManager.getUsimAasMaxNameLen();
+    }
+
+    public boolean hasSne() {
+        return mUsimPhoneBookManager.hasSne();
+    }
+
+    public int getSneRecordLen() {
+        return mUsimPhoneBookManager.getSneRecordLen();
+    }
+
+    public boolean isAdnAccessible() {
+        return mUsimPhoneBookManager.isAdnAccessible();
+    }
+
+    public boolean isUsimPhbEfAndNeedReset(int fileId) {
+        return mUsimPhoneBookManager.isUsimPhbEfAndNeedReset(fileId);
+    }
+
+    public UsimPBMemInfo[] getPhonebookMemStorageExt() {
+        return mUsimPhoneBookManager.getPhonebookMemStorageExt();
+    }
+    // MTK-END [mtk80601][111215][ALPS00093395]
+    public boolean isUICCCard() {
+        if (mFh instanceof CsimFileHandler) {
+            return true;
+        }
+        return false;
+    }
+    */
 }
