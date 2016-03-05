@@ -1887,9 +1887,64 @@ public final class DcTracker extends DcTrackerBase implements IratController.OnI
     private void onApnChanged() {
         // XXX: MTK has completely different impl... Hope this wouldn't break
         // SVLTE.
-        if (DBG) log("onApnChanged: tryRestartDataConnections");
-        setInitialAttachApn(create3gppApnsList(), mSimRecords.get());
-        tryRestartDataConnections(isApnCleanupNeeded(), Phone.REASON_APN_CHANGED);
+        // if (DBG) log("onApnChanged: tryRestartDataConnections");
+        // setInitialAttachApn(create3gppApnsList(), mSimRecords.get());
+        // tryRestartDataConnections(isApnCleanupNeeded(), Phone.REASON_APN_CHANGED);
+        if (mPhone instanceof GSMPhone) {
+            // The "current" may no longer be valid.  MMS depends on this to send properly. TBD
+            ((GSMPhone)mPhone).updateCurrentCarrierInProvider();
+        }
+
+        /** M: onApnChanged optimization
+         *  keep current settings before create new apn list
+         */
+        ArrayList<ApnSetting> prevAllApns = mAllApnSettings;
+        ApnSetting prevPreferredApn = mPreferredApn;
+        if (DBG) log("onApnChanged: createAllApnList and set initial attach APN");
+        createAllApnList();
+
+        ApnSetting previousAttachApn = mInitialAttachApnSetting;
+
+        /// M: we will do nothing if the apn is not changed or only the APN name
+        /// is changed. Generally speaking, if PreferredApn and AttachApns are
+        /// both not changed, it will be considered that APN not changed. But if both
+        /// of them are not changed but any of them is null, then we double confirm it
+        /// by compare preAllApns and curAllApns.
+        final String prevPreferredApnString = apnToStringIgnoreName(prevPreferredApn);
+        final String curPreferredApnString = apnToStringIgnoreName(mPreferredApn);
+        final String prevAttachApnSettingString = apnToStringIgnoreName(previousAttachApn);
+        final String curAttachApnSettingString = apnToStringIgnoreName(mInitialAttachApnSetting);
+        if (TextUtils.equals(prevPreferredApnString, curPreferredApnString)
+                && TextUtils.equals(prevAttachApnSettingString, curAttachApnSettingString)) {
+            // If preferred APN or preferred initial APN is null, we need to check all APNs.
+            if ((prevPreferredApnString == null || prevAttachApnSettingString == null)
+                    && !TextUtils.equals(apnsToStringIgnoreName(prevAllApns),
+                            apnsToStringIgnoreName(mAllApnSettings))) {
+                log("onApnChanged: all APN setting changed.");
+            } else {
+                log("onApnChanged: not changed, preferredApn = " + prevPreferredApnString);
+                return;
+            }
+        }
+
+        IccRecords r = mIccRecords.get();
+        String operator = (r != null) ? r.getOperatorNumeric() : "";
+        if (operator != null && operator.length() > 0) {
+            // M: update initial attach APN for SVLTE since SVLTE use specific
+            // APN for initial attach.
+            if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                updateInitialAttachApnForSvlte();
+            }
+            setInitialAttachApn();
+        } else {
+            if (DBG) {
+                log("onApnChanged: but no operator numeric");
+            }
+        }
+
+        if (DBG) log("onApnChanged: cleanUpAllConnections and setup connectable APN");
+        sendMessage(obtainMessage(DctConstants.EVENT_APN_CHANGED_DONE));
+
     }
 
     private boolean isApnCleanupNeeded() {
@@ -4396,6 +4451,60 @@ public final class DcTracker extends DcTrackerBase implements IratController.OnI
         }
     }
     */
+
+    /**
+     * M: Concat the string of all ApnSetting in the list.
+     *
+     * @param apnSettings
+     * @return
+     */
+    private String apnsToStringIgnoreName(ArrayList<ApnSetting> apnSettings) {
+        if (apnSettings == null || apnSettings.size() == 0) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ApnSetting t : apnSettings) {
+            sb.append(apnToStringIgnoreName(t));
+        }
+        log("apnsToStringIgnoreName: sb = " + sb.toString());
+        return sb.toString();
+    }
+
+    /**
+     * M: Similar as ApnSetting.toString except the carrier is not considerred
+     * because some operator need to change the APN name when locale changed.
+     *
+     * @param apnSetting
+     * @return
+     */
+    private String apnToStringIgnoreName(ApnSetting apnSetting) {
+        if (apnSetting == null) {
+            return null;
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append(apnSetting.id)
+        .append(", ").append(apnSetting.numeric)
+        .append(", ").append(apnSetting.apn)
+        .append(", ").append(apnSetting.proxy)
+        .append(", ").append(apnSetting.mmsc)
+        .append(", ").append(apnSetting.mmsProxy)
+        .append(", ").append(apnSetting.mmsPort)
+        .append(", ").append(apnSetting.port)
+        .append(", ").append(apnSetting.authType).append(", ");
+        for (int i = 0; i < apnSetting.types.length; i++) {
+            sb.append(apnSetting.types[i]);
+            if (i < apnSetting.types.length - 1) {
+                sb.append(" | ");
+            }
+        }
+        sb.append(", ").append(apnSetting.protocol);
+        sb.append(", ").append(apnSetting.roamingProtocol);
+        sb.append(", ").append(apnSetting.carrierEnabled);
+        sb.append(", ").append(apnSetting.bearer);
+        log("apnToStringIgnoreName: sb = " + sb.toString());
+        return sb.toString();
+    }
 
     private boolean handleApnConflict(ApnContext apnContext, ApnSetting apnSetting) {
         if (DUALTALK_SPPORT) {

@@ -80,6 +80,7 @@ public class DcSwitchStateMachine extends StateMachine {
         if (DBG) log("DcSwitchState constructor E");
         mPhone = phone;
         mId = id;
+        mIsAttached = false;  // MTK
 
         addState(mDefaultState);
         addState(mIdleState, mDefaultState);
@@ -231,11 +232,12 @@ public class DcSwitchStateMachine extends StateMachine {
             }
             mReason = "";
 
-            if (mPhone.getServiceState() != null &&
-                    mPhone.getServiceState().getDataRegState() == ServiceState.STATE_IN_SERVICE) {
-                log("AttachingState: Data already registered. Move to Attached");
-                transitionTo(mAttachedState);
-            }
+            // MTK doesn't have this
+            // if (mPhone.getServiceState() != null &&
+            //         mPhone.getServiceState().getDataRegState() == ServiceState.STATE_IN_SERVICE) {
+            //     log("AttachingState: Data already registered. Move to Attached");
+            //     transitionTo(mAttachedState);
+            // }
         }
 
         @Override
@@ -295,7 +297,7 @@ public class DcSwitchStateMachine extends StateMachine {
                     if (DBG) {
                         log("AttachingState: REQ_DISCONNECT_ALL" );
                     }
-                    DctController.getInstance().releaseAllRequests(mId);
+                    // DctController.getInstance().releaseAllRequests(mId);
                     mAc.replyToMessage(msg, DcSwitchAsyncChannel.RSP_DISCONNECT_ALL,
                             PhoneConstants.APN_REQUEST_STARTED);
 

@@ -369,7 +369,8 @@ public class DctController extends Handler {
         if (sDctController == null) {
             logd("makeDctController: new DctController phones.length=" + phones.length);
             sDctController = new DctController(phones, looper);
-            DdsScheduler.init();
+            // MTK doesn't have this
+            // DdsScheduler.init();
         }
         logd("makeDctController: X sDctController=" + sDctController);
         return sDctController;
@@ -417,29 +418,35 @@ public class DctController extends Handler {
             } else {
                 loge("DctController(phones): Could not connect to " + i);
             }
+
+            // MTK
+            // Register for radio state change
+            // M: [C2K][IRAT] Change for phone ID.
+            PhoneBase phoneBase = getActivePhone(phoneId);
+            updatePhoneBaseForIndex(i, phoneBase);
         }
 
         mContext = mPhones[0].getContext();
 
-        for (int i = 0; i < mPhoneNum; ++i) {
-            // Register for radio state change
-            PhoneBase phoneBase = (PhoneBase)mPhones[i].getActivePhone();
-            updatePhoneBaseForIndex(i, phoneBase);
-        }
+        // MTK
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_SHUTDOWN_IPO);
+        filter.addAction(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
+        mContext.registerReceiver(mIntentReceiver, filter);
 
         HandlerThread t = new HandlerThread("DdsSwitchSerializer");
         t.start();
 
         mDdsSwitchSerializer = new DdsSwitchSerializerHandler(t.getLooper());
 
-        mContext.registerReceiver(subInfoBroadcastReceiver,
-                new IntentFilter(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED));
+        // mContext.registerReceiver(subInfoBroadcastReceiver,
+        //         new IntentFilter(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED));
 
-        mContext.registerReceiver(defaultDdsBroadcastReceiver,
-                new IntentFilter(TelephonyIntents.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED));
+        // mContext.registerReceiver(defaultDdsBroadcastReceiver,
+        //         new IntentFilter(TelephonyIntents.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED));
 
         mSubMgr = SubscriptionManager.from(mContext);
-        mSubMgr.addOnSubscriptionsChangedListener(mOnSubscriptionsChangedListener);
+        // mSubMgr.addOnSubscriptionsChangedListener(mOnSubscriptionsChangedListener);
 
         //Register for settings change.
         mContext.getContentResolver().registerContentObserver(
@@ -482,10 +489,10 @@ public class DctController extends Handler {
         }
         releaseAllNetworkRequests();
 
-        mContext.unregisterReceiver(defaultDdsBroadcastReceiver);
-        mContext.unregisterReceiver(subInfoBroadcastReceiver);
+        // mContext.unregisterReceiver(defaultDdsBroadcastReceiver);
+        // mContext.unregisterReceiver(subInfoBroadcastReceiver);
 
-        mSubMgr.removeOnSubscriptionsChangedListener(mOnSubscriptionsChangedListener);
+        // mSubMgr.removeOnSubscriptionsChangedListener(mOnSubscriptionsChangedListener);
         mContext.getContentResolver().unregisterContentObserver(mObserver);
     }
 
@@ -689,14 +696,42 @@ public class DctController extends Handler {
         logd("releaseNetwork request=" + request + ", requestInfo=" + requestInfo);
 
         mRequestInfos.remove(request.requestId);
+
+        // MTK
+        String specifier = request.networkCapabilities.getNetworkSpecifier();
+        boolean bToAttachingState = false;
+        int phoneId = -1;
+        if (specifier != null && !specifier.equals("")) {
+            int subId =  Integer.parseInt(specifier);
+            if (subId < SubscriptionManager.INVALID_SUBSCRIPTION_ID &&
+                request.networkCapabilities.
+                hasCapability(NetworkCapabilities.NET_CAPABILITY_EIMS)) {
+                bToAttachingState = true;
+                phoneId = mSubController.getPhoneId(subId);
+            }
+        }
+
         releasePendingRequest(request);
         releaseRequest(requestInfo);
         processRequests();
+
+        // MTK
+        if (bToAttachingState) {
+            logd("ECC w/o SIM, disconnectAllSync to transit to attaching state: " + bToAttachingState
+                 + ", Set phoneId: " + phoneId + " to attaching state");
+            mDcSwitchAsyncChannel[phoneId].disconnectAllSync();
+        }
+
         return PhoneConstants.APN_REQUEST_STARTED;
     }
 
     void processRequests() {
         logd("processRequests");
+
+        // MTK
+        // remove redundant messages firstly, this situation happens offen.
+        removeMessages(EVENT_PROCESS_REQUESTS);
+
         sendMessage(obtainMessage(EVENT_PROCESS_REQUESTS));
     }
 
@@ -721,6 +756,13 @@ public class DctController extends Handler {
     }
 
     private void onProcessRequest() {
+        for (int i = 0; i < getGroupNumbers(); i++) {
+            onProcessGroup(i);
+        }
+    }
+
+    // MTK version of onProcessRequest with "group" support
+    private void onProcessGroup(int group) {
         //process all requests
         //1. Check all requests and find subscription of the top priority
         //   request
@@ -729,36 +771,65 @@ public class DctController extends Handler {
         //2-2. If no, set data not allow on the current PS subscription
         //2-2-1. Set data allow on the selected subscription
 
-        int phoneId = getTopPriorityRequestPhoneId();
+        int phoneId = getTopPriorityRequestPhoneId(group);
         int activePhoneId = -1;
 
-        for (int i=0; i<mDcSwitchAsyncChannel.length; i++) {
-            if (!mDcSwitchAsyncChannel[i].isIdleSync()) {
+        for (int i = 0; i < mDcSwitchStateMachine.length; i++) {
+            if (getGroupId(i) == group && !mDcSwitchAsyncChannel[i].isIdleSync()) {
                 activePhoneId = i;
                 break;
             }
         }
 
-        logd("onProcessRequest phoneId=" + phoneId
+        logd("onProcessGroup phoneId=" + phoneId + ", groupId=" + group
                 + ", activePhoneId=" + activePhoneId);
 
-        if (phoneId != -1 && activePhoneId != -1 && activePhoneId != phoneId) {
-            mDcSwitchAsyncChannel[activePhoneId].disconnectAllSync();
-        } else {
-            for (RequestInfo requestInfo : mRequestInfos.values()) {
-                if (getRequestPhoneId(requestInfo.request) == phoneId && !requestInfo.executed) {
-                    mDcSwitchAsyncChannel[phoneId].connectSync(requestInfo);
+        /** M: handle data not allowed that all state should be set to IDLD */
+        if (mDataAllowed) {
+            if (activePhoneId == -1 || activePhoneId == phoneId) {
+                Iterator<Integer> iterator = mRequestInfos.keySet().iterator();
+
+                if (activePhoneId == -1 && !iterator.hasNext()) {
+                    logd("No active phone, set phone" + phoneId + " to attaching state");
+                    transitToAttachingState(phoneId);
                 }
+
+                while (iterator.hasNext()) {
+                    RequestInfo requestInfo = mRequestInfos.get(iterator.next());
+                    if (getRequestPhoneId(requestInfo.request) == phoneId
+                            && requestInfo.mGId == group
+                            && !requestInfo.executed) {
+                        mDcSwitchAsyncChannel[phoneId].connectSync(requestInfo);
+                    }
+                }
+            } else {
+                mDcSwitchAsyncChannel[activePhoneId].disconnectAllSync();
+            }
+        } else {
+            if (activePhoneId != -1) {
+                logd("onProcessRequest data is not allowed, release all requests");
+                onReleaseAllRequests(activePhoneId);
+            } else {
+                logd("onProcessRequest data is not allowed and already in IDLE state");
             }
         }
     }
 
     private void onExecuteRequest(RequestInfo requestInfo) {
         logd("onExecuteRequest request=" + requestInfo);
-        if (!requestInfo.executed) {
+
+        // MTK: Fix a timing issue if we already restore the request to pending queue.
+        // Check the request which we want to execute is still in the requestInfo or not.
+        // if (!requestInfo.executed) {
+        if (needExecuteRequest(requestInfo)) {
             requestInfo.executed = true;
             String apn = apnForNetworkRequest(requestInfo.request);
             int phoneId = getRequestPhoneId(requestInfo.request);
+
+            // MTK
+            logd("onExecuteRequest apn = " + apn + " phoneId=" + phoneId);
+            requestInfo.phoneId = phoneId; // remember the executed phone id.
+
             PhoneBase phoneBase = (PhoneBase)mPhones[phoneId].getActivePhone();
             DcTrackerBase dcTracker = phoneBase.mDcTracker;
             dcTracker.incApnRefCount(apn);
@@ -766,7 +837,7 @@ public class DctController extends Handler {
     }
 
     private void onExecuteAllRequests(int phoneId) {
-        logd("onExecuteAllRequests phoneId=" + phoneId);
+        logd("onExecuteAllRequests phoneId=" + phoneId + /* MTK */ ",request size = " + mRequestInfos.size());
         Iterator<Integer> iterator = mRequestInfos.keySet().iterator();
         while (iterator.hasNext()) {
             RequestInfo requestInfo = mRequestInfos.get(iterator.next());
@@ -780,7 +851,9 @@ public class DctController extends Handler {
         logd("onReleaseRequest request=" + requestInfo);
         if (requestInfo != null && requestInfo.executed) {
             String apn = apnForNetworkRequest(requestInfo.request);
-            int phoneId = getRequestPhoneId(requestInfo.request);
+            // MTK
+            // int phoneId = getRequestPhoneId(requestInfo.request);
+            int phoneId = requestInfo.phoneId;
             PhoneBase phoneBase = (PhoneBase)mPhones[phoneId].getActivePhone();
             DcTrackerBase dcTracker = phoneBase.mDcTracker;
             dcTracker.decApnRefCount(apn);
@@ -793,7 +866,9 @@ public class DctController extends Handler {
         Iterator<Integer> iterator = mRequestInfos.keySet().iterator();
         while (iterator.hasNext()) {
             RequestInfo requestInfo = mRequestInfos.get(iterator.next());
-            if (getRequestPhoneId(requestInfo.request) == phoneId) {
+            // MTK
+            // if (getRequestPhoneId(requestInfo.request) == phoneId) {
+            if (requestInfo.phoneId == phoneId) {
                 onReleaseRequest(requestInfo);
             }
         }
@@ -824,6 +899,8 @@ public class DctController extends Handler {
         }
         SystemProperties.set(PROPERTY_RIL_DATA_ICCID, defaultIccid);
 
+        // MTK
+        /*
         int activePhoneId = -1;
         for (int i=0; i<mDcSwitchStateMachine.length; i++) {
             if (!mDcSwitchAsyncChannel[i].isIdleSync()) {
@@ -837,15 +914,23 @@ public class DctController extends Handler {
             loge("onSettingsChange, subIds null or length 0 for activePhoneId " + activePhoneId);
             return;
         }
-        logd("onSettingsChange, data sub: " + dataSubId + ", active data sub: " + subIds[0]);
 
-        if (subIds[0] != dataSubId) {
+        logd("onSettingsChange, data sub: " + dataSubId + ", active data sub: " + subIds[0]);
+        */
+
+        logd("onSettingsChange, data sub: " + dataSubId
+                + ", defaultIccid: " + defaultIccid);
+
+        // if (subIds[0] != dataSubId) {
+            int i = 0;  // MTK
             Iterator<Integer> iterator = mRequestInfos.keySet().iterator();
             while (iterator.hasNext()) {
                 RequestInfo requestInfo = mRequestInfos.get(iterator.next());
                 String specifier = requestInfo.request.networkCapabilities.getNetworkSpecifier();
+                String apn = apnForNetworkRequest(requestInfo.request);  // MTK
                 if (specifier == null || specifier.equals("")) {
-                    if (requestInfo.executed) {
+                    if (requestInfo.executed && /* MTK */ !apn.equals(PhoneConstants.APN_TYPE_IMS)) {
+                        /*
                         String apn = apnForNetworkRequest(requestInfo.request);
                         logd("[setDataSubId] activePhoneId:" + activePhoneId + ", subId =" +
                                 dataSubId);
@@ -854,25 +939,35 @@ public class DctController extends Handler {
                         DcTrackerBase dcTracker = phoneBase.mDcTracker;
                         dcTracker.decApnRefCount(apn);
                         requestInfo.executed = false;
+                        */
+                        onReleaseRequest(requestInfo);
                     }
+
+                    for (i = 0; i < mPhoneNum; ++i) {
+                        ((DctController.TelephonyNetworkFactory) mNetworkFactory[i])
+                               .addPendingRequest(requestInfo.request);
+                    }
+                    iterator.remove();
                 }
             }
-        }
+        // }
 
         // Some request maybe pending due to invalid settings
         // Try to handle pending request when settings changed
-        for (int i = 0; i < mPhoneNum; ++i) {
+        for (/* int */ i = 0; i < mPhoneNum; ++i) {
             ((DctController.TelephonyNetworkFactory)mNetworkFactory[i]).evalPendingRequest();
         }
 
         processRequests();
     }
 
-    private int getTopPriorityRequestPhoneId() {
+    private int getTopPriorityRequestPhoneId(int group) {
         RequestInfo retRequestInfo = null;
         int phoneId = -1;
         int priority = -1;
 
+        // MTK
+        /*
         for (RequestInfo requestInfo : mRequestInfos.values()) {
             logd("selectExecPhone requestInfo = " + requestInfo);
             if (priority < requestInfo.priority) {
@@ -880,13 +975,33 @@ public class DctController extends Handler {
                 retRequestInfo = requestInfo;
             }
         }
+        */
+        //TODO: Handle SIM Switch
+        for (int i = 0; i < mPhoneNum; i++) {
+            Iterator<Integer> iterator = mRequestInfos.keySet().iterator();
+            while (iterator.hasNext()) {
+                RequestInfo requestInfo = mRequestInfos.get(iterator.next());
+                logd("selectExecPhone requestInfo = " + requestInfo);
+                if (getRequestPhoneId(requestInfo.request) == i
+                        && priority < requestInfo.priority
+                        && requestInfo.mGId == group) {
+                    priority = requestInfo.priority;
+                    retRequestInfo = requestInfo;
+                }
+            }
+        }
 
         if (retRequestInfo != null) {
             phoneId = getRequestPhoneId(retRequestInfo.request);
         }
+        // MTK
+        else {
+            phoneId = getPreferPhoneId(group);
+        }
 
         logd("getTopPriorityRequestPhoneId = " + phoneId
-                + ", priority = " + priority);
+                + ", priority = " + priority
+                + ", group = " + group);
 
         return phoneId;
     }
@@ -1687,6 +1802,10 @@ public class DctController extends Handler {
 
     // MTK
 
+    private boolean isValidPhoneId(int phoneId) {
+        return phoneId >= 0 && phoneId <= mPhoneNum;
+    }
+
     private int requestNetwork(NetworkRequest request, int priority, int gid) {
         logd("requestNetwork request=" + request + ", priority=" + priority
             + ", gid = " + gid);
@@ -1887,8 +2006,7 @@ public class DctController extends Handler {
     /** M: transit to attaching state. */
     private void transitToAttachingState(int targetPhoneId) {
         int groupId = getGroupId(targetPhoneId);
-        // MTK TODO: groupId is ignored for now!
-        int topPriorityPhoneId = getTopPriorityRequestPhoneId(/* groupId */);
+        int topPriorityPhoneId = getTopPriorityRequestPhoneId(groupId);
         int activePhoneId = -1;
         if (topPriorityPhoneId == targetPhoneId
             || (CdmaFeatureOptionUtils.isCdmaLteDcSupport() && mRequestInfos.isEmpty())) {
