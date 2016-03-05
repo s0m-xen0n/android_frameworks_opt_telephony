@@ -5677,6 +5677,16 @@ public class RIL extends BaseCommands implements CommandsInterface {
         send(rr);
     }
 
+    public void setStkEvdlCallByAP(int enabled, Message response) {
+        RILRequest rr =
+                //RILRequest.obtain(RIL_REQUEST_STK_EVDL_CALL_BY_AP, response, mySimId);
+                RILRequest.obtain(RIL_REQUEST_STK_EVDL_CALL_BY_AP, response);
+        if (RILJ_LOGD) riljLog(rr.serialString() + ">>> " + requestToString(rr.mRequest));
+        rr.mParcel.writeInt(1);
+        rr.mParcel.writeInt(enabled);
+        send(rr);
+    }
+
     //MTK-START Support Multi-Application
     @Override
     public void openIccApplication(int application, Message response) {
