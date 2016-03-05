@@ -1680,20 +1680,54 @@ public class GSMPhone extends PhoneBase {
 
     @Override
     public void setCallWaiting(boolean enable, Message onComplete) {
-        ImsPhone imsPhone = mImsPhone;
-        if ((imsPhone != null)
-                && (imsPhone.getServiceState().getState() == ServiceState.STATE_IN_SERVICE
-                || imsPhone.isUtEnabled())) {
-            imsPhone.setCallWaiting(enable, onComplete);
+        // MTK rewritten
+        if (mTbcwMode == TBCW_OP01_VOLTE_USER) {
+            setTerminalBasedCallWaiting(enable, onComplete);
+            return;
+        } else if (mTbcwMode == TBCW_OP01_NOT_VOLTE_USER) {
+            mCi.setCallWaiting(enable, CommandsInterface.SERVICE_CLASS_VOICE, onComplete);
             return;
         }
 
+        ImsPhone imsPhone = mImsPhone;
+        if ((getCsFallbackStatus() == PhoneConstants.UT_CSFB_PS_PREFERRED) && (imsPhone != null)
+                && (imsPhone.getServiceState().getState() == ServiceState.STATE_IN_SERVICE)) {
+            SuppSrvRequest ss = SuppSrvRequest.obtain(SuppSrvRequest.SUPP_SRV_REQ_SET_CW,
+                    onComplete);
+
+            int enableState = enable ? 1 : 0;
+            ss.mParcel.writeInt(enableState);
+            Message imsUtResult = obtainMessage(EVENT_IMS_UT_DONE, ss);
+
+            imsPhone.setCallWaiting(enable, imsUtResult);
+            return;
+        }
+
+        /// M: SS Ut part @{
+        if ((getCsFallbackStatus() == PhoneConstants.UT_CSFB_PS_PREFERRED)
+                && MMTelSSUtils.isGsmUtSupport(mPhoneId)) {
+            mSSReqDecisionMaker.setCallWaiting(enable,
+                    CommandsInterface.SERVICE_CLASS_VOICE, onComplete);
+            return;
+        }
+        /// @}
+
+        if (getCsFallbackStatus() == PhoneConstants.UT_CSFB_ONCE) {
+            setCsFallbackStatus(PhoneConstants.UT_CSFB_PS_PREFERRED);
+        }
         mCi.setCallWaiting(enable, CommandsInterface.SERVICE_CLASS_VOICE, onComplete);
     }
 
     @Override
     public void
     getAvailableNetworks(Message response) {
+        // MTK
+        log("getAvailableNetworks");
+        /** M: for suspend data during plmn list */
+        DctController.getInstance().setDataAllowed(getSubId(), false,
+                                                                Phone.REASON_QUERY_PLMN, 330000);
+
+        mCi.registerForGetAvailableNetworksDone(this, EVENT_GET_AVAILABLE_NETWORK_DONE, null);
         mCi.getAvailableNetworks(response);
     }
 
@@ -2035,6 +2069,9 @@ public class GSMPhone extends PhoneBase {
                     imsPhone.getServiceState().setStateOff();
                 }
                 mRadioOffOrNotAvailableRegistrants.notifyRegistrants();
+                // MTK
+                mCi.unregisterForGetAvailableNetworksDone(this);
+                DctController.getInstance().setDataAllowed(getSubId(), true, null, 0);
                 break;
             }
 
@@ -2927,6 +2964,63 @@ public class GSMPhone extends PhoneBase {
 
         Rlog.e(LOG_TAG, "setTerminalBasedCallWaiting(): ERROR: tbcwMode = " + tbcwMode);
         return;
+    }
+
+    @Override
+    public synchronized void cancelAvailableNetworks(Message response) {
+        log("cancelAvailableNetworks");
+        mCi.unregisterForGetAvailableNetworksDone(this);
+        DctController.getInstance().setDataAllowed(getSubId(), true, null, 0);
+
+        mCi.cancelAvailableNetworks(response);
+    }
+
+    @Override
+    public void
+    setNetworkSelectionModeSemiAutomatic(OperatorInfo network,Message response) {
+        // wrap the response message in our own message along with
+        // an empty string (to indicate automatic selection) for the
+        // operator's id.
+        NetworkSelectMessage nsm = new NetworkSelectMessage();
+        nsm.message = response;
+        nsm.operatorNumeric = "";
+        nsm.operatorAlphaLong = "";
+
+        Message msg = obtainMessage(EVENT_SET_NETWORK_AUTOMATIC_COMPLETE, nsm);
+
+        String actype = ACT_TYPE_GSM;
+        if(network.getOperatorAlphaLong() != null && network.getOperatorAlphaLong().endsWith(UTRAN_INDICATOR)) {
+            actype = ACT_TYPE_UTRAN;
+        } else if (network.getOperatorAlphaLong() != null && network.getOperatorAlphaLong().endsWith(LTE_INDICATOR)){
+            actype = ACT_TYPE_LTE;
+        }
+
+        mCi.setNetworkSelectionModeSemiAutomatic(network.getOperatorNumeric(),actype, msg);
+    }
+
+    @Override
+    public void
+    selectNetworkManually(OperatorInfo network,
+            Message response) {
+        // wrap the response message in our own message along with
+        // the operator's id.
+        NetworkSelectMessage nsm = new NetworkSelectMessage();
+        nsm.message = response;
+        nsm.operatorNumeric = network.getOperatorNumeric();
+        nsm.operatorAlphaLong = network.getOperatorAlphaLong();
+
+        Message msg = obtainMessage(EVENT_SET_NETWORK_MANUAL_COMPLETE, nsm);
+
+        Rlog.d(LOG_TAG, "GSMPhone selectNetworkManually() :" + network);
+
+        String actype = ACT_TYPE_GSM;
+        if(network.getOperatorAlphaLong() != null && network.getOperatorAlphaLong().endsWith(UTRAN_INDICATOR)) {
+            actype = ACT_TYPE_UTRAN;
+        } else if (network.getOperatorAlphaLong() != null && network.getOperatorAlphaLong().endsWith(LTE_INDICATOR)){
+            actype = ACT_TYPE_LTE;
+        }
+
+        mCi.setNetworkSelectionModeManualWithAct(network.getOperatorNumeric(), actype, msg);
     }
 
     private void handleAbnormalEvent(String[] args) {

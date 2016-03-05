@@ -141,6 +141,7 @@ public class SubscriptionInfoUpdater extends Handler {
             = new AtomicReferenceArray<IccRecords>(PROJECT_SIM_NUM);
     private static final int sReadICCID_retry_time = 1000;
     private int mReadIccIdCount = 0;
+    protected final Object mLock = new Object();
 
     static String[] PROPERTY_ICCID_SIM = {
         "ril.iccid.sim1",
@@ -446,6 +447,8 @@ public class SubscriptionInfoUpdater extends Handler {
     public void handleMessage(Message msg) {
         AsyncResult ar = (AsyncResult)msg.obj;
         switch (msg.what) {
+            // xen0n: use MTK impl below
+            /*
             case EVENT_QUERY_ICCID_DONE: {
                 Integer slotId = (Integer)ar.userObj;
                 logd("handleMessage : <EVENT_QUERY_ICCID_DONE> SIM" + (slotId + 1));
@@ -467,6 +470,7 @@ public class SubscriptionInfoUpdater extends Handler {
                 }
                 break;
             }
+            */
             case EVENT_ICC_CHANGED:
                 Integer cardIndex = new Integer(PhoneConstants.DEFAULT_CARD_INDEX);
                 if (ar.result != null) {
@@ -510,9 +514,9 @@ public class SubscriptionInfoUpdater extends Handler {
                 break;
 
             // MTK
-            /*
-            case EVENT_SIM_LOCKED_QUERY_ICCID_DONE: {
-                AsyncResult ar = (AsyncResult) msg.obj;
+            // this is just EVENT_SIM_LOCKED_QUERY_ICCID_DONE
+            case EVENT_QUERY_ICCID_DONE: {
+                // AsyncResult ar = (AsyncResult) msg.obj;
                 QueryIccIdUserObj uObj = (QueryIccIdUserObj) ar.userObj;
                 int slotId = uObj.slotId;
                 logd("handleMessage : <EVENT_SIM_LOCKED_QUERY_ICCID_DONE> SIM" + (slotId + 1));
@@ -544,12 +548,13 @@ public class SubscriptionInfoUpdater extends Handler {
                 // MTK-START
                 mCollectSimState[slotId] = 1;
                 // MTK-END
-                // xen0n: don't spawn threads
-                handleSimLocked(uObj.reason, slotId);
+                SubscriptionUpdatorThread updatorThread = new SubscriptionUpdatorThread(
+                        new QueryIccIdUserObj(uObj.reason, slotId),
+                        SubscriptionUpdatorThread.SIM_LOCKED);
+                updatorThread.start();
                 // MTK-END
                 break;
             }
-            */
 
             case EVENT_RADIO_UNAVAILABLE:
                 Integer index = getCiIndex(msg);
@@ -579,8 +584,10 @@ public class SubscriptionInfoUpdater extends Handler {
                 break;
 
             case EVENT_SIM_NO_CHANGED: {
-                // xen0n: don't spawn threads
-                handleSimNoChanged(msg.arg1);
+                SubscriptionUpdatorThread updatorThread = new SubscriptionUpdatorThread(
+                        new QueryIccIdUserObj(null, msg.arg1),
+                        SubscriptionUpdatorThread.SIM_NO_CHANGED);
+                updatorThread.start();
                 break;
             }
 
@@ -677,6 +684,7 @@ public class SubscriptionInfoUpdater extends Handler {
 
     private void handleSimLoaded(int slotId) {
         logd("handleSimStateLoadedInternal: slotId: " + slotId);
+        boolean needUpdate = false;  // MTK
         // The SIM should be loaded at this state, but it is possible in cases such as SIM being
         // removed or a refresh RESET that the IccRecords could be null. The right behavior is to
         // not broadcast the SIM loaded.
@@ -693,11 +701,15 @@ public class SubscriptionInfoUpdater extends Handler {
         String iccId = SystemProperties.get(PROPERTY_ICCID_SIM[slotId], "");
         if (!iccId.equals(mIccId[slotId])) {
             logd("NeedUpdate");
-            // MTK TODO: is this important?
-            // needUpdate = true;
+            needUpdate = true;
             mIccId[slotId] = iccId;
         }
         mCollectSimState[slotId] = 1;
+
+        // MTK
+        if (isAllIccIdQueryDone() && needUpdate) {
+            updateSubscriptionInfoByIccId();
+        }
 
         if (mTelephonyMgr == null) {
             mTelephonyMgr = TelephonyManager.from(mContext);
@@ -864,8 +876,16 @@ public class SubscriptionInfoUpdater extends Handler {
      * only what the current list contains.
      */
     synchronized private void updateSubscriptionInfoByIccId() {
+        synchronized (mLock) {  // MTK
         logd("updateSubscriptionInfoByIccId:+ Start");
         mNeedUpdate = false;
+
+        // MTK
+        // ALPS01933839 timing issue, JE after receiving IPO shutdown
+        // do this update
+        if (!isAllIccIdQueryDone()){
+            return;
+        }
 
         mSubscriptionManager.clearSubscriptionInfo();
 
@@ -982,10 +1002,11 @@ public class SubscriptionInfoUpdater extends Handler {
                     + mInsertSimState[i]);
         }
 
-        SubscriptionHelper.getInstance().updateNwMode();
-        if (ModemStackController.getInstance().isStackReady() && PROJECT_SIM_NUM > 1) {
-            SubscriptionHelper.getInstance().updateSubActivation(mInsertSimState, false);
-        }
+        // MTK doesn't have these
+        // SubscriptionHelper.getInstance().updateNwMode();
+        // if (ModemStackController.getInstance().isStackReady() && PROJECT_SIM_NUM > 1) {
+        //     SubscriptionHelper.getInstance().updateSubActivation(mInsertSimState, false);
+        // }
 
         List<SubscriptionInfo> subInfos = mSubscriptionManager.getActiveSubscriptionInfoList();
         int nSubCount = (subInfos == null) ? 0 : subInfos.size();
@@ -1065,17 +1086,22 @@ public class SubscriptionInfoUpdater extends Handler {
 
         SubscriptionController.getInstance().notifySubscriptionInfoChanged();
         // MTK end
-        SubscriptionController.getInstance().handleSubscriptionInfoReady();
         logd("updateSubscriptionInfoByIccId:- SsubscriptionInfo update complete");
+        }  // synchronized block
     }
 
     private boolean isNewSim(String iccId, String[] oldIccId) {
         boolean newSim = true;
         for(int i = 0; i < PROJECT_SIM_NUM; i++) {
-            if(iccId.equals(oldIccId[i])) {
-                newSim = false;
-                break;
+            // MTK-START
+            // Modify for special SIMs have the same IccIds
+            if (iccId != null && oldIccId[i] != null) {
+                if (iccId.equals(oldIccId[i])) {
+                    newSim = false;
+                    break;
+                }
             }
+            // MTK-END
         }
         logd("newSim = " + newSim);
 
@@ -1091,26 +1117,132 @@ public class SubscriptionInfoUpdater extends Handler {
         Rlog.d(LOG_TAG, message);
     }
 
-    // xen0n
-
-    private void handleSimLocked(String reason, int slotId) {
-        // not necessary as we're not multi-threaded
-        // if (isAllIccIdQueryDone()) {
-            updateSubscriptionInfoByIccId();
-        // }
-        broadcastSimStateChanged(slotId,
-                IccCardConstants.INTENT_VALUE_ICC_LOCKED, reason);
-    }
-
-    private void handleSimNoChanged(int slotId) {
-        logd("[Common Slot] processing SIM_NO_CHANGED on main thread instead");
-        mCollectSimState[slotId] = 1;
-        // if (isAllIccIdQueryDone()) {
-            updateSubscriptionInfoByIccId();
-        // }
-    }
-
     // MTK
+
+    private static class QueryIccIdUserObj {
+        public String reason;
+        public int slotId;
+
+        QueryIccIdUserObj(String reason, int slotId) {
+            this.reason = reason;
+            this.slotId = slotId;
+        }
+    };
+
+    private class SubscriptionUpdatorThread extends Thread {
+        public static final int SIM_ABSENT = 0;
+        public static final int SIM_LOADED = 1;
+        public static final int SIM_LOCKED = 2;
+        public static final int SIM_NO_CHANGED = 3;
+
+        private QueryIccIdUserObj mUserObj;
+        private int mEventId;
+
+        SubscriptionUpdatorThread(QueryIccIdUserObj userObj, int eventId) {
+            mUserObj = userObj;
+            mEventId = eventId;
+        }
+
+        @Override
+        public void run() {
+            switch (mEventId) {
+                case SIM_ABSENT:
+                    handleSimAbsent(mUserObj.slotId);
+                    break;
+
+                case SIM_LOADED:
+                    handleSimLoaded(mUserObj.slotId);
+                    break;
+
+                case SIM_LOCKED:
+                    if (isAllIccIdQueryDone()) {
+                          updateSubscriptionInfoByIccId();
+                    }
+                    broadcastSimStateChanged(mUserObj.slotId,
+                            IccCardConstants.INTENT_VALUE_ICC_LOCKED, mUserObj.reason);
+                    break;
+                case SIM_NO_CHANGED:
+                    logd("[Common Slot]SubscriptionUpdatorThread run for SIM_NO_CHANGED.");
+                    mCollectSimState[mUserObj.slotId] = 1;
+                    if (isAllIccIdQueryDone()) {
+                          updateSubscriptionInfoByIccId();
+                    }
+                default:
+                    logd("SubscriptionUpdatorThread run with invalid event id.");
+                    break;
+            }
+        }
+    };
+
+    private void handleSimLocked(int slotId, String reason) {
+        // MTK-START
+        // [ALPS01981366] Since MTK add new thread for updateSubscriptionInfoByIccId,
+        // it might cause NullPointerException if we set mIccId to null without synchronized block.
+        synchronized (mLock) {
+        // MTK-END
+        if (mIccId[slotId] != null && mIccId[slotId].equals(ICCID_STRING_FOR_NO_SIM)) {
+            logd("SIM" + (slotId + 1) + " hot plug in");
+            mIccId[slotId] = null;
+        }
+
+        IccFileHandler fileHandler = mPhone[slotId].getIccCard() == null ? null :
+                mPhone[slotId].getIccCard().getIccFileHandler();
+
+        if (fileHandler != null) {
+            String iccId = mIccId[slotId];
+            // MTK-START
+            if (iccId == null || iccId.equals("")) {
+                // [ALPS02006863]
+                // 1.Execute updateSubscriptionInfoByIccId by another thread might cause
+                //   broadcast intent sent before update done.
+                //   Need to make updateSubscriptionInfoByIccId and send broadcast as a wrapper
+                //   with the same thread to avoid broadcasting before update done.
+                // 2.Use Icc id system property istead SIM IO to query to enhance
+                //   update database performance.
+                mIccId[slotId] = SystemProperties.get(PROPERTY_ICCID_SIM[slotId], "");
+
+                if (mIccId[slotId] != null && !mIccId[slotId].equals("")) {
+                    logd("Use Icc ID system property for performance enhancement");
+                    // MTK-START
+                    mCollectSimState[slotId] = 1;
+                    // MTK-END
+                    SubscriptionUpdatorThread updatorThread = new SubscriptionUpdatorThread(
+                            new QueryIccIdUserObj(reason, slotId),
+                            SubscriptionUpdatorThread.SIM_LOCKED);
+                    updatorThread.start();
+                } else {
+            // MTK-END
+                    logd("Querying IccId");
+                    fileHandler.loadEFTransparent(IccConstants.EF_ICCID,
+                            obtainMessage(EVENT_QUERY_ICCID_DONE,
+                                    new QueryIccIdUserObj(reason, slotId)));
+            // MTK-START
+                }
+            // MTK-END
+            } else {
+                logd("NOT Querying IccId its already set sIccid[" + slotId + "]=" + iccId);
+                // ALPS01929356 : In case PUK lock condition,
+                // It will always broadcast SIM locked.
+                // MTK-START
+                mCollectSimState[slotId] = 1;
+                // MTK-END
+                broadcastSimStateChanged(slotId, IccCardConstants.INTENT_VALUE_ICC_LOCKED,
+                        reason);
+            }
+        } else {
+            logd("sFh[" + slotId + "] is null, ignore");
+            // ALPS01929356 : In case PUK lock condition,
+            // It will always broadcast SIM locked.
+            // MTK-START
+            mCollectSimState[slotId] = 1;
+            // MTK-END
+            broadcastSimStateChanged(slotId, IccCardConstants.INTENT_VALUE_ICC_LOCKED,
+                    reason);
+        }
+        // MTK-START
+        }
+        // MTK-END
+    }
 
     private void setUpdatedData(int detectedType, int subCount, int newSimStatus) {
 
@@ -1171,11 +1303,11 @@ public class SubscriptionInfoUpdater extends Handler {
     }
 
     private void clearIccId(int slotId) {
-        // synchronized (mLock) {
+        synchronized (mLock) {
             logd("[clearIccId], slotId = " + slotId);
             mFh[slotId] = null;
             mIccId[slotId] = null;
-        // }
+        }
     }
 
     private boolean readIccIdProperty() {
@@ -1198,30 +1330,30 @@ public class SubscriptionInfoUpdater extends Handler {
                 }
             }
             if (isAllIccIdQueryDone()) {
-                // new Thread() {
-                //     public void run() {
+                new Thread() {
+                    public void run() {
                         updateSubscriptionInfoByIccId();
-                //     }
-                // } .start();
+                    }
+                } .start();
                 // ALPS01934211 : Need to wait for updateSubscriptionInfoByIccId done
-                // synchronized (mLock) {
+                synchronized (mLock) {
                     return true;
-                // }
+                }
             } else {
                 return false;
             }
         } else {
             if (checkAllIccIdReady()) {
                 if (needUpdateSubInfo()) {
-                    // new Thread() {
-                    //     public void run() {
+                    new Thread() {
+                        public void run() {
                             updateSubscriptionInfoByIccId();
-                    //     }
-                    // } .start();
+                        }
+                    } .start();
                     // ALPS01934211 : Need to wait for updateSubscriptionInfoByIccId done
-                    // synchronized (mLock) {
+                    synchronized (mLock) {
                         return true;
-                    // }
+                    }
                 } else {
                     Intent intent = new Intent(TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED);
                     intent.putExtra(SubscriptionManager.INTENT_KEY_DETECT_STATUS,

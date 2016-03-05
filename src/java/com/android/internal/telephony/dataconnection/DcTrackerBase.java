@@ -877,29 +877,42 @@ public abstract class DcTrackerBase extends Handler {
         Message msg = obtainMessage(DctConstants.CMD_SET_USER_DATA_ENABLE);
         msg.arg1 = enable ? 1 : 0;
         sendMessage(msg);
+
+        // MTK
+        // M: cc33 notify modem the data on/off state
+        mPhone.mCi.setDataOnToMD(enable, null);
     }
 
     /**
      * Return current {@link android.provider.Settings.Global#MOBILE_DATA} value.
      */
     public boolean getDataEnabled() {
+        // MTK rewritten
+        boolean retVal = "true".equalsIgnoreCase(SystemProperties.get(
+                "ro.com.android.mobiledata", "false"));
         try {
-            final ContentResolver resolver = mPhone.getContext().getContentResolver();
-            return Settings.Global.getInt(resolver,
-                    Settings.Global.MOBILE_DATA + mPhone.getPhoneId()) != 0;
-        } catch (SettingNotFoundException e) {
-            try {
-                final ContentResolver resolver = mPhone.getContext().getContentResolver();
-                boolean enabled = Settings.Global.getInt(resolver,
-                        Settings.Global.MOBILE_DATA) != 0;
-                Settings.Global.putInt(resolver,
-                        Settings.Global.MOBILE_DATA + mPhone.getPhoneId(),
-                        enabled ? 1 : 0);
-                return enabled;
-            } catch (SettingNotFoundException snfe) {
-                return true;
+            if (TelephonyManager.getDefault().getSimCount() == 1) {
+                retVal = Settings.Global.getInt(mResolver, Settings.Global.MOBILE_DATA,
+                        retVal ? 1 : 0) != 0;
+            } else {
+                int phoneSubId = mPhone.getSubId();
+
+                if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+                    phoneSubId = SvlteUtils.getSvlteSubIdBySubId(phoneSubId);
+                }
+
+                log("phoneSubId = " + phoneSubId);
+                retVal = Settings.Global.getInt(mResolver,
+                        Settings.Global.MOBILE_DATA + phoneSubId) != 0;
             }
+            if (DBG) {
+                log("getDataEnabled: getInt retVal=" + retVal);
+            }
+        } catch (SettingNotFoundException snfe) {
+            // Not found the 'MOBILE_DATA+phoneSubId' setting, we should initialize it.
+            retVal = handleMobileDataSettingNotFound(retVal);
         }
+        return retVal;
     }
 
     // abstract methods
@@ -2356,6 +2369,81 @@ public abstract class DcTrackerBase extends Handler {
     }
 
     // MTK
+
+    private boolean handleMobileDataSettingNotFound(boolean retVal) {
+        log("handleMobileDataSettingNotFound: initial retVal=" + retVal);
+
+        int phoneSubId = mPhone.getSubId();
+        //C2K: get correct sub id
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            phoneSubId = SvlteUtils.getSvlteSubIdBySubId(phoneSubId);
+        }
+        if (!SubscriptionManager.isValidSubscriptionId(phoneSubId)) {
+            log("invalid sub id, return data disabled");
+            return false;
+        }
+
+        retVal = Settings.Global.getInt(mResolver, Settings.Global.MOBILE_DATA,
+                retVal ? 1 : 0) != 0;
+
+        if (!retVal) {
+            setUserDataProperty(false);
+            Settings.Global.putInt(mResolver, Settings.Global.MOBILE_DATA + phoneSubId, 0);
+        } else { // OP02 will have default value of MOBILE_DATA as true
+            int defaultDataSubId = SubscriptionManager.getDefaultDataSubId();
+            log("defaultDataSubId = " + defaultDataSubId);
+            if (defaultDataSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                // 'MOTA upgrade' will go this way
+                if (phoneSubId == defaultDataSubId) {
+                    setUserDataProperty(true);
+                    Settings.Global.putInt(mResolver,
+                            Settings.Global.MOBILE_DATA + phoneSubId, 1);
+                    retVal = true;
+                } else {
+                    setUserDataProperty(false);
+                    Settings.Global.putInt(mResolver,
+                            Settings.Global.MOBILE_DATA + phoneSubId, 0);
+                    retVal = false;
+                }
+            } else {
+                int insertedStatus = 0;
+                for (int i = 0; i < TelephonyManager.getDefault().getPhoneCount(); i++) {
+                    if (!NO_SIM_VALUE.equals(SystemProperties.get(PROPERTY_ICCID[i]))) {
+                        insertedStatus = insertedStatus | (1 << i);
+                    }
+                }
+                log("insertedStatus = " + insertedStatus);
+                if (insertedStatus == 1 || insertedStatus == 3) {
+                    if (mPhone.getPhoneId() == 0) {
+                        setUserDataProperty(true);
+                        Settings.Global.putInt(mResolver,
+                                Settings.Global.MOBILE_DATA + phoneSubId, 1);
+                        retVal = true;
+                    } else {
+                        setUserDataProperty(false);
+                        Settings.Global.putInt(mResolver,
+                                Settings.Global.MOBILE_DATA + phoneSubId, 0);
+                        retVal = false;
+                    }
+                } else if (insertedStatus == 2) {
+                    if (mPhone.getPhoneId() == 1) {
+                        setUserDataProperty(true);
+                        Settings.Global.putInt(mResolver,
+                                Settings.Global.MOBILE_DATA + phoneSubId, 1);
+                        retVal = true;
+                    } else {
+                        setUserDataProperty(false);
+                        Settings.Global.putInt(mResolver,
+                                Settings.Global.MOBILE_DATA + phoneSubId, 0);
+                        retVal = false;
+                    }
+                }
+            }
+        }
+
+        log("handleMobileDataSettingNotFound: after retVal=" + retVal);
+        return retVal;
+    }
 
     protected boolean isDataAllowedAsOff(String apnType) {
         return false;

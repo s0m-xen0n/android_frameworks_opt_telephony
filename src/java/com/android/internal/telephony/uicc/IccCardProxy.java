@@ -165,7 +165,10 @@ public class IccCardProxy extends Handler implements IccCard {
             @Override
             public void onReceive(Context context, Intent intent) {
                 if (TelephonyIntents.ACTION_SUBINFO_RECORD_UPDATED.equals(intent.getAction())) {
-                    setExternalState(mExternalState, true);
+                    // MTK
+                    // xen0n: this is not present on MTK
+                    // setExternalState(mExternalState, true);
+                    log("don't setExternalState on MTK");
                 }
             }};
 

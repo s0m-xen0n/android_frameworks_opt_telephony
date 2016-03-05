@@ -308,7 +308,7 @@ public abstract class PhoneBase extends Handler implements Phone {
      * if we are looking for automatic selection. operatorAlphaLong is the
      * corresponding operator name.
      */
-    protected static class NetworkSelectMessage {
+    public /* MTK */ static class NetworkSelectMessage {
         public Message message;
         public String operatorNumeric;
         public String operatorAlphaLong;
