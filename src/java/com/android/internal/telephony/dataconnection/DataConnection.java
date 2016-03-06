@@ -36,11 +36,13 @@ import com.android.internal.util.AsyncChannel;
 import com.android.internal.util.Protocol;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.server.net.BaseNetworkObserver;
 
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.net.ConnectivityManager;
+import android.net.INetworkManagementEventObserver;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkAgent;
@@ -51,6 +53,8 @@ import android.net.NetworkUtils;
 import android.net.ProxyInfo;
 import android.os.AsyncResult;
 import android.os.Build;
+import android.os.IBinder;
+import android.os.INetworkManagementService;
 import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
@@ -162,7 +166,7 @@ public final class DataConnection extends StateMachine {
     private static final String FALLBACK_DATA_RETRY_CONFIG =
             "max_retries=13, 5000,10000,30000,60000,300000,1800000,3600000,14400000,"
             + "28800000,28800000,28800000,28800000,28800000";
-    // private final INetworkManagementService mNetworkManager;
+    private final INetworkManagementService mNetworkManager;
     private String mInterfaceName = null;
 
     /**
@@ -359,6 +363,11 @@ public final class DataConnection extends StateMachine {
 
     void dispose() {
         log("dispose: call quiteNow()");
+
+        // MTK
+        //unregister network observer
+        unRegisterNetworkAlertObserver();
+
         quitNow();
     }
 
@@ -534,6 +543,13 @@ public final class DataConnection extends StateMachine {
             addState(mDisconnectingErrorCreatingConnection, mDefaultState);
         setInitialState(mInactiveState);
 
+        // M: IPv6 RA update
+        log("get INetworkManagementService");
+        IBinder b = ServiceManager.getService(Context.NETWORKMANAGEMENT_SERVICE);
+        mNetworkManager = INetworkManagementService.Stub.asInterface(b);
+        // register network observer
+        regiseterNetworkAlertObserver();
+
         mApnContexts = new ArrayList<ApnContext>();
         if (DBG) log("DataConnection constructor X");
     }
@@ -612,6 +628,10 @@ public final class DataConnection extends StateMachine {
         if (DBG) log("onConnect: carrier='" + mApnSetting.carrier
                 + "' APN='" + mApnSetting.apn
                 + "' proxy='" + mApnSetting.proxy + "' port='" + mApnSetting.port + "'");
+
+        // MTK
+        // allow to received ip status changed
+        setIpChangedReceivedOrNot(true);
 
         // Check if we should fake an error.
         if (mDcTesterFailBringUpAll.getDcFailBringUp().mCounter  > 0) {
@@ -1738,6 +1758,9 @@ public final class DataConnection extends StateMachine {
             mTag += 1;
             if (DBG) log("DcInactiveState: enter() mTag=" + mTag);
 
+            /// M: IPV6 RA
+            setIpChangedReceivedOrNot(false);
+
             if (mConnectionParams != null) {
                 if (DBG) {
                     log("DcInactiveState: enter notifyConnectCompleted +ALL failCause="
@@ -1864,6 +1887,9 @@ public final class DataConnection extends StateMachine {
     private class DcRetryingState extends State {
         @Override
         public void enter() {
+            /// M: IPV6 RA
+            setIpChangedReceivedOrNot(false);
+
             if ((mConnectionParams.mRilRat != mRilRat)
                     || (mDataRegState != ServiceState.STATE_IN_SERVICE)){
                 // RAT has changed or we're not in service so don't even begin retrying.
@@ -2059,7 +2085,7 @@ public final class DataConnection extends StateMachine {
             }
 
             // M: IPv6 RA update
-            // setIpChangedReceivedOrNot(true);
+            setIpChangedReceivedOrNot(true);
 
             // L MR1
             if (mNetworkAgent == null) {
@@ -2345,6 +2371,9 @@ public final class DataConnection extends StateMachine {
                     mNetworkInfo.getReason(), mNetworkInfo.getExtraInfo());
             mNetworkAgent.sendNetworkInfo(mNetworkInfo);
             mNetworkAgent = null;
+
+            // M: IPv6 RA update
+            setIpChangedReceivedOrNot(false);
         }
 
         @Override
@@ -2510,6 +2539,13 @@ public final class DataConnection extends StateMachine {
      * The state machine is disconnecting.
      */
     private class DcDisconnectingState extends State {
+        // MTK
+        @Override
+        public void enter() {
+            if (DBG) log("DcDisconnectingState enter");
+            setIpChangedReceivedOrNot(false);
+        }
+
         @Override
         public boolean processMessage(Message msg) {
             boolean retVal;
@@ -2572,6 +2608,13 @@ public final class DataConnection extends StateMachine {
      * The state machine is disconnecting after an creating a connection.
      */
     private class DcDisconnectionErrorCreatingConnection extends State {
+        // MTK
+        @Override
+        public void enter() {
+            if (DBG) log("DcDisconnectionErrorCreatingConnection enter");
+            setIpChangedReceivedOrNot(false);
+        }
+
         @Override
         public boolean processMessage(Message msg) {
             boolean retVal;
@@ -3032,7 +3075,6 @@ public final class DataConnection extends StateMachine {
         sendMessage(obtainMessage(event, addrInfo));
     }
 
-    /*
     private INetworkManagementEventObserver mAlertObserver = new BaseNetworkObserver() {
         @Override
         public void addressRemoved(String iface, LinkAddress address) {
@@ -3059,7 +3101,6 @@ public final class DataConnection extends StateMachine {
             }
         }
     };
-    */
 
     private void onAddressRemoved(){
         if ((RILConstants.SETUP_DATA_PROTOCOL_IPV6.equals(mApnSetting.protocol)
@@ -3305,7 +3346,6 @@ public final class DataConnection extends StateMachine {
     }
 
     private void regiseterNetworkAlertObserver() {
-        /*
         if (mNetworkManager != null){
             log("regiseterNetworkAlertObserver X");
             resetIpv4v6UpdatedStatus();
@@ -3317,10 +3357,8 @@ public final class DataConnection extends StateMachine {
                 loge("regiseterNetworkAlertObserver failed E");
             }
         }
-        */
     }
     private void unRegisterNetworkAlertObserver() {
-        /*
         if (mNetworkManager != null){
             log("unRegiseterNetworkAlertObserver X");
             resetIpv4v6UpdatedStatus();
@@ -3333,7 +3371,6 @@ public final class DataConnection extends StateMachine {
             }
             mInterfaceName = null;
         }
-        */
     }
     private void setIpChangedReceivedOrNot(boolean bFlag) {
         resetIpv4v6UpdatedStatus();
