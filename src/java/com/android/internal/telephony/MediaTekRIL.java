@@ -46,6 +46,8 @@ import java.io.InputStream;
 
 import com.android.internal.telephony.RadioCapability;
 import com.android.internal.telephony.cdma.CdmaSmsBroadcastConfigInfo;
+import com.android.internal.telephony.dataconnection.DcFailCause;
+import com.android.internal.telephony.dataconnection.DataCallResponse;
 import com.android.internal.telephony.gsm.SmsBroadcastConfigInfo;
 import com.android.internal.telephony.gsm.SsData;
 import com.android.internal.telephony.uicc.IccRecords;
@@ -2723,16 +2725,39 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         send(rr);
     }
 
-    // Override setupDataCall as the MTK RIL needs 8th param CID (hardwired to 1?)
     @Override
     public void
     setupDataCall(String radioTechnology, String profile, String apn,
             String user, String password, String authType, String protocol,
             Message result) {
+        /* [Note by mtk01411] In original Android2.1 release: MAX PDP Connection is 1
+        * request_cid is only allowed to set as "1" manually
+        */
+        setupDataCall(radioTechnology, profile, apn, user, password, authType, protocol, "1", result);
+    }
+
+    @Override
+    public void
+    setupDataCall(String radioTechnology, String profile, String apn,
+            String user, String password, String authType, String protocol,
+            String interfaceId, Message result) {
+        DefaultBearerConfig defaultBearerConfig = new DefaultBearerConfig();
+        setupDataCall(radioTechnology, profile, apn, user, password, authType, protocol, interfaceId, defaultBearerConfig, result);
+    }
+
+    @Override
+    public void
+    setupDataCall(String radioTechnology, String profile, String apn,
+            String user, String password, String authType, String protocol,
+            String interfaceId, DefaultBearerConfig defaultBearerConfig, Message result) {
         RILRequest rr
                 = RILRequest.obtain(RIL_REQUEST_SETUP_DATA_CALL, result);
 
-        rr.mParcel.writeInt(8);
+        if (SystemProperties.get("ro.mtk_ims_support").equals("1")) {
+            rr.mParcel.writeInt(18);
+        } else {
+            rr.mParcel.writeInt(8); //the number should be changed according to number of parameters
+        }
 
         rr.mParcel.writeString(radioTechnology);
         rr.mParcel.writeString(profile);
@@ -2741,14 +2766,110 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         rr.mParcel.writeString(password);
         rr.mParcel.writeString(authType);
         rr.mParcel.writeString(protocol);
-        rr.mParcel.writeString("1");
+
+        /** M: specify interface Id */
+        rr.mParcel.writeString(interfaceId);
+
+        //VoLTE
+        rr.mParcel.writeString("" + defaultBearerConfig.mIsValid);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.qci);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.dlGbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.ulGbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.dlMbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mQos.ulMbr);
+        rr.mParcel.writeString("" + defaultBearerConfig.mEmergency_ind);
+        rr.mParcel.writeString("" + defaultBearerConfig.mPcscf_discovery_flag);
+        rr.mParcel.writeString("" + defaultBearerConfig.mSignaling_flag);
+
+        //M: ePDG @{
+        int isHandover = 0;
+        if (SystemProperties.get("ro.mtk_epdg_support").equals("1")) {
+            isHandover = result.arg1;
+        }
+        rr.mParcel.writeString("" + isHandover);
+        //@}
 
         if (RILJ_LOGD) riljLog(rr.serialString() + "> "
                 + requestToString(rr.mRequest) + " " + radioTechnology + " "
                 + profile + " " + apn + " " + user + " "
-                + password + " " + authType + " " + protocol + "1");
+                + password + " " + authType + " " + protocol + " "
+                + interfaceId + " " + defaultBearerConfig + " "
+                + isHandover);
 
         send(rr);
+    }
+
+    // wow the format is just different enough to annoy people... fxxk MTK
+    @Override
+    protected DataCallResponse getDataCallResponse(Parcel p, int version) {
+        DataCallResponse dataCall = new DataCallResponse();
+
+        dataCall.version = version;
+        if (version < 5) {
+            dataCall.cid = p.readInt();
+            dataCall.active = p.readInt();
+            dataCall.type = p.readString();
+            String addresses = p.readString();
+            if (!TextUtils.isEmpty(addresses)) {
+                dataCall.addresses = addresses.split(" ");
+            }
+        } else {
+            dataCall.status = p.readInt();
+            dataCall.suggestedRetryTime = p.readInt();
+            dataCall.cid = p.readInt();
+            dataCall.active = p.readInt();
+            dataCall.mtu = p.readInt(); // new: mtu
+            dataCall.type = p.readString();
+            dataCall.ifname = p.readString();
+            if ((dataCall.status == DcFailCause.NONE.getErrorCode()) &&
+                    TextUtils.isEmpty(dataCall.ifname)) {
+              throw new RuntimeException("getDataCallResponse, no ifname");
+            }
+            String addresses = p.readString();
+            if (!TextUtils.isEmpty(addresses)) {
+                dataCall.addresses = addresses.split(" ");
+            }
+            String dnses = p.readString();
+            if (!TextUtils.isEmpty(dnses)) {
+                dataCall.dnses = dnses.split(" ");
+            }
+            String gateways = p.readString();
+            if (!TextUtils.isEmpty(gateways)) {
+                dataCall.gateways = gateways.split(" ");
+            }
+
+
+            //VoLTE
+            //For dedicate bearer support, add the magic number 1000
+            if (version > 1000) {
+                String pcscf = p.readString();
+                if (!TextUtils.isEmpty(pcscf)) {
+                    dataCall.pcscf = pcscf.split(" ");
+                }
+
+                //read dedicate bearer information (if any)
+                Object response = responseSetupDedicateDataCall(p);
+                if (response != null) {
+                    if (response instanceof DedicateDataCallState) {
+                        dataCall.concatenateDataCallState.add((DedicateDataCallState)response);
+                    } else {
+                        DedicateDataCallState[] concatenateDataCallState = (DedicateDataCallState[])response;
+                        for (int i=0,length=concatenateDataCallState.length; i<length; i++)
+                            dataCall.concatenateDataCallState.add(concatenateDataCallState[i]);
+                    }
+            }
+
+                //read default bearer information
+                DedicateDataCallState dedicateDataCall = new DedicateDataCallState();
+                dedicateDataCall = (DedicateDataCallState) responseSetupDedicateDataCall(p);
+                dataCall.defaultBearerDataCallState = dedicateDataCall;
+
+                riljLog("[DefaultBearer: " + dedicateDataCall.interfaceId + ", " + dedicateDataCall.defaultCid + ", " + dedicateDataCall.cid + ", " + dedicateDataCall.active +
+                ", " + dedicateDataCall.signalingFlag + ", " + dedicateDataCall.failCause + ", Qos" + dedicateDataCall.qosStatus + ", Tft" + dedicateDataCall.tftStatus +
+                ", PCSCF" + dedicateDataCall.pcscfInfo);
+            }
+        }
+        return dataCall;
     }
 
     protected Object
