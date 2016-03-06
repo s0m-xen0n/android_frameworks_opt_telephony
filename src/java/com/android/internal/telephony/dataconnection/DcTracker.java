@@ -1654,6 +1654,7 @@ public final class DcTracker extends DcTrackerBase implements IratController.OnI
     @Override
     protected boolean mvnoMatches(IccRecords r, String mvnoType, String mvnoMatchData) {
         if (mvnoType.equalsIgnoreCase("spn")) {
+            log("mvnoMatches: spn: r.getServiceProviderName() = " + r.getServiceProviderName() + " mvnoMatchData=" + mvnoMatchData);
             if ((r.getServiceProviderName() != null) &&
                     r.getServiceProviderName().equalsIgnoreCase(mvnoMatchData)) {
                 return true;
@@ -5321,8 +5322,11 @@ public final class DcTracker extends DcTrackerBase implements IratController.OnI
         log("[IRAT_DcTracker] makeInitialAttachApn with operator = " + operator
                 + ",iaApnName = " + iaApnName);
         if (operator != null) {
-            String selection = "apn = '" + iaApnName + "' and numeric = '" + operator
-                    + "'";
+            // xen0n: it seems the stock firmware doesn't have the apn part...
+            // but the lax query resulted in unwanted mismatch, so I added entries for ctlte instead.
+            // String selection = "apn = '" + iaApnName + "' and numeric = '" + operator
+            //         + "'";
+            String selection = "numeric = '" + operator + "'";
             log("[IRAT_DcTracker] makeInitialAttachApn: selection=" + selection);
 
             Cursor cursor = mPhone
@@ -5597,6 +5601,8 @@ public final class DcTracker extends DcTrackerBase implements IratController.OnI
                     continue;
                 }
 
+                // xen0n: why does not this pass through?
+                log("createApnList: apn " + apn + " hasMvnoParams=" + apn.hasMvnoParams() + " data=" + apn.mvnoMatchData);
                 if (apn.hasMvnoParams()) {
                     if (r != null
                             && mvnoMatches(r, apn.mvnoType, apn.mvnoMatchData)) {

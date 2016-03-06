@@ -189,8 +189,9 @@ public class UiccCard {
             CardState oldState = mCardState;
             mCardState = ics.mCardState;
             mUniversalPinState = ics.mUniversalPinState;
-            mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
-            mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
+            // MTK
+            // mGsmUmtsSubscriptionAppIndex = ics.mGsmUmtsSubscriptionAppIndex;
+            // mCdmaSubscriptionAppIndex = ics.mCdmaSubscriptionAppIndex;
             mImsSubscriptionAppIndex = ics.mImsSubscriptionAppIndex;
             mContext = c;
             mCi = ci;
@@ -243,6 +244,12 @@ public class UiccCard {
                 mUICCConfig = new UICCConfig();
             if (DBG) log(ics.mApplications.length + " applications");
             for ( int i = 0; i < mUiccApplications.length; i++) {
+                // MTK
+                if (targetIndex != i && targetIndex >= 0) {
+                    continue;
+                }
+                log("update: mUiccApplications[" + i + "]=" + mUiccApplications[i]);
+
                 if (mUiccApplications[i] == null) {
                     //Create newly added Applications
                     if (i < ics.mApplications.length) {

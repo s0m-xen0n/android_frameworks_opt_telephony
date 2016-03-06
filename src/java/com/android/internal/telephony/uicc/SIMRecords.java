@@ -456,6 +456,8 @@ public class SIMRecords extends IccRecords {
     @Override
     public void dispose() {
         if (DBG) log("Disposing SIMRecords this=" + this);
+        // xen0n: trace
+        if (DBG) Rlog.w(LOG_TAG, "stack trace as follows", new Exception());
         // MTK
         //3g dongle
         isDispose = true;
@@ -1291,9 +1293,8 @@ public class SIMRecords extends IccRecords {
             case EVENT_GET_SPN_DONE:
                 isRecordLoadResponse = true;
                 ar = (AsyncResult) msg.obj;
-                // MTK TODO: wtf is that code
-                getSpnFsm(false, ar);
-                /*
+                // MTK
+                // getSpnFsm(false, ar);
                 if (ar != null && ar.exception == null) {
                     if (DBG) log("getSpnFsm, Got data from EF_SPN");
                     data = (byte[]) ar.result;
@@ -1346,7 +1347,6 @@ public class SIMRecords extends IccRecords {
                         }
                     }
                 }
-                */
             break;
 
             case EVENT_GET_CFF_DONE:
