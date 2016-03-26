@@ -82,6 +82,8 @@ import com.android.internal.telephony.RadioCapability;
 import com.android.internal.telephony.TelephonyDevController;
 import com.android.internal.telephony.HardwareConfig;
 
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.FileDescriptor;
@@ -299,7 +301,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
     //***** Constants
 
     // match with constant in ril.cpp
-    static final int RIL_MAX_COMMAND_BYTES = (8 * 1024);
+    static final int RIL_MAX_COMMAND_BYTES = (20 * 1024);  // MTK
     static final int RESPONSE_SOLICITED = 0;
     static final int RESPONSE_UNSOLICITED = 1;
 
@@ -691,35 +693,53 @@ public class RIL extends BaseCommands implements CommandsInterface {
                 DEFAULT_WAKE_LOCK_TIMEOUT);
         mWakeLockCount = 0;
 
-        mSenderThread = new HandlerThread("RILSender" + mInstanceId);
-        mSenderThread.start();
-
-        Looper looper = mSenderThread.getLooper();
-        mSender = new RILSender(looper);
-
-        ConnectivityManager cm = (ConnectivityManager)context.getSystemService(
-                Context.CONNECTIVITY_SERVICE);
-        if (cm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE) == false) {
-            riljLog("Not starting RILReceiver: wifi-only");
-        } else {
-            riljLog("Starting RILReceiver" + mInstanceId);
-            mReceiver = createRILReceiver();
-            mReceiverThread = new Thread(mReceiver, "RILReceiver" + mInstanceId);
-            mReceiverThread.start();
-
+        ///M: SVLTE solution2 C2K RIL connect/disconnect  control. @{
+        if (CdmaFeatureOptionUtils.isCdmaLteDcSupport()) {
+            if (mPreferredNetworkType != RILConstants.NETWORK_MODE_CDMA) {
+                connectRild();
+            }
             DisplayManager dm = (DisplayManager)context.getSystemService(
                     Context.DISPLAY_SERVICE);
             mDefaultDisplay = dm.getDisplay(Display.DEFAULT_DISPLAY);
             dm.registerDisplayListener(mDisplayListener, null);
-            mDefaultDisplayState = mDefaultDisplay.getState();
+        } else {
+            mSenderThread = new HandlerThread("RILSender" + mInstanceId);
+            mSenderThread.start();
 
-            IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-            Intent batteryStatus = context.registerReceiver(mBatteryStateListener, filter);
-            if (batteryStatus != null) {
-                // 0 means it's on battery
-                mIsDevicePlugged = batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
+            Looper looper = mSenderThread.getLooper();
+            mSender = new RILSender(looper);
+
+            ConnectivityManager cm = (ConnectivityManager)context.getSystemService(
+                    Context.CONNECTIVITY_SERVICE);
+            if (cm.isNetworkSupported(ConnectivityManager.TYPE_MOBILE) == false) {
+                riljLog("Not starting RILReceiver: wifi-only");
+            } else {
+                riljLog("Starting RILReceiver" + mInstanceId);
+                mReceiver = createRILReceiver();
+                mReceiverThread = new Thread(mReceiver, "RILReceiver" + mInstanceId);
+                mReceiverThread.start();
+
+                DisplayManager dm = (DisplayManager)context.getSystemService(
+                        Context.DISPLAY_SERVICE);
+                mDefaultDisplay = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                dm.registerDisplayListener(mDisplayListener, null);
+                mDefaultDisplayState = mDefaultDisplay.getState();
+
+                IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+                Intent batteryStatus = context.registerReceiver(mBatteryStateListener, filter);
+                if (batteryStatus != null) {
+                    // 0 means it's on battery
+                    mIsDevicePlugged = batteryStatus.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0;
+                }
             }
         }
+        /// @}
+        // xen0n: (useless) refactoring
+        /*
+        IntentFilter filter = new IntentFilter();
+        filter.addAction("com.mtk.TEST_TRM");
+        context.registerReceiver(mIntentReceiver, filter);
+        */
 
         TelephonyDevController tdc = TelephonyDevController.getInstance();
         tdc.registerRIL(this);
@@ -5291,4 +5311,27 @@ public class RIL extends BaseCommands implements CommandsInterface {
         unexpectedMTKCall();
     }
     //UTK end
+
+    ///M: C2K RIL SWITCH @{
+    protected void connectRild() {
+        mSenderThread = new HandlerThread("RILSender" + mInstanceId);
+        mSenderThread.start();
+        Looper looper = mSenderThread.getLooper();
+        mSender = new RILSender(looper);
+
+        riljLog("Starting RILReceiver" + mInstanceId);
+        mReceiver = new RILReceiver();
+        mReceiverThread = new Thread(mReceiver, "RILReceiver" + mInstanceId);
+        mReceiverThread.start();
+    }
+
+    @Override
+    public void connectRilSocket() {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void disconnectRilSocket() {
+        unexpectedMTKCall();
+    }
 }
