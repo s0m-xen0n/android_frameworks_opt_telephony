@@ -5555,26 +5555,6 @@ public class RIL extends BaseCommands implements CommandsInterface {
     }
 
     @Override
-    public void setOnPlmnChangeNotification(Handler h, int what, Object obj) {
-        unexpectedMTKCall();
-    }
-
-    @Override
-    public void unSetOnPlmnChangeNotification(Handler h) {
-        unexpectedMTKCall();
-    }
-
-    @Override
-    public void setOnRegistrationSuspended(Handler h, int what, Object obj) {
-        unexpectedMTKCall();
-    }
-
-    @Override
-    public void unSetOnRegistrationSuspended(Handler h) {
-        unexpectedMTKCall();
-    }
-
-    @Override
     public void setResumeRegistration(int sessionId, Message response) {
         unexpectedMTKCall();
     }
