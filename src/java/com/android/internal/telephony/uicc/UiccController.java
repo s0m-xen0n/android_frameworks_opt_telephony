@@ -413,4 +413,13 @@ public class UiccController extends Handler {
             pw.println("  " + mCardLogs.get(i));
         }
     }
+
+    // MTK
+
+    public static final int CARD_TYPE_NONE = 0;
+    public static final int CARD_TYPE_SIM  = 1;
+    public static final int CARD_TYPE_USIM = 2;
+    public static final int CARD_TYPE_RUIM = 4;
+    public static final int CARD_TYPE_CSIM = 8;
+
 }

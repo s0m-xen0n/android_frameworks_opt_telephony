@@ -46,6 +46,8 @@ import android.util.Log;
 import java.util.Objects;
 import com.android.internal.telephony.IccCardConstants.State;
 
+import com.mediatek.internal.telephony.cdma.CdmaFeatureOptionUtils;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -139,6 +141,10 @@ public class SubscriptionController extends ISub.Stub {
     protected static int mDefaultPhoneId = SubscriptionManager.DEFAULT_PHONE_INDEX;
 
     private int[] colorArr;
+
+    // MTK
+    private static final boolean MTK_LTEDC_SUPPORT = CdmaFeatureOptionUtils.isCdmaLteDcSupport();
+    private boolean mIsReady = false;
 
     public static SubscriptionController init(Phone phone) {
         synchronized (SubscriptionController.class) {
@@ -251,6 +257,9 @@ public class SubscriptionController extends ISub.Stub {
          } catch (RemoteException ex) {
              // Should never happen because its always available.
          }
+
+         // MTK
+         setReadyState(true);
 
          // FIXME: Remove if listener technique accepted.
          broadcastSimInfoContentChanged();
@@ -1276,6 +1285,9 @@ public class SubscriptionController extends ISub.Stub {
                 return 0;
             }
 
+            // MTK
+            setReadyState(false);
+
             sSlotIdxToSubId.clear();
             if (DBG) logdl("[clearSubInfo]- clear size=" + size);
             return size;
@@ -1565,6 +1577,26 @@ public class SubscriptionController extends ISub.Stub {
     // FIXME: We need we should not be assuming phoneId == slotId as it will not be true
     // when there are multiple subscriptions per sim and probably for other reasons.
     public int getSubIdUsingPhoneId(int phoneId) {
+        // MTK-START
+        // Add the special handle for LTE_DC_PHONE_ID
+        if (MTK_LTEDC_SUPPORT) {
+            if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_1) {
+                logd("[getSubIdUsingPhoneId]- phone is LTE_DC_PHONE_ID_1.");
+                if (!isReady()) {
+                    return SubscriptionManager.LTE_DC_SUB_ID_1 - 2;
+                } else {
+                    return SubscriptionManager.LTE_DC_SUB_ID_1;
+                }
+            } else if (phoneId == SubscriptionManager.LTE_DC_PHONE_ID_2) {
+                logd("[getSubIdUsingPhoneId]- phone is LTE_DC_PHONE_ID_2.");
+                if (!isReady()) {
+                    return SubscriptionManager.LTE_DC_SUB_ID_2 - 2;
+                } else {
+                    return SubscriptionManager.LTE_DC_SUB_ID_2;
+                }
+            }
+        }
+        // MTK-END
         int[] subIds = getSubId(phoneId);
         if (subIds == null || subIds.length == 0) {
             return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
@@ -1927,5 +1959,25 @@ public class SubscriptionController extends ISub.Stub {
         } finally {
             Binder.restoreCallingIdentity(token);
         }
+    }
+
+    // MTK
+
+    /**
+     * Query if sub module always initialization done.
+     *
+     */
+    public boolean isReady() {
+        logd("[isReady]- " + mIsReady);
+        return mIsReady;
+    }
+
+    /**
+     * Set sub module initialization state.
+     *
+     */
+    public void setReadyState(boolean isReady) {
+        logd("[setReadyState]- " + isReady);
+        mIsReady = isReady;
     }
 }
