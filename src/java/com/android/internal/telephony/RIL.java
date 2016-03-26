@@ -2492,7 +2492,7 @@ public class RIL extends BaseCommands implements CommandsInterface {
         }
     }
 
-    protected void sendScreenState(boolean on) {
+    public /* MTK */ void sendScreenState(boolean on) {
         RILRequest rr = RILRequest.obtain(RIL_REQUEST_SCREEN_STATE, null);
         rr.mParcel.writeInt(1);
         rr.mParcel.writeInt(on ? 1 : 0);
@@ -5149,4 +5149,146 @@ public class RIL extends BaseCommands implements CommandsInterface {
         }
         send(rr);
     }
+
+    // MTK
+    // xen0n: move MTK-specific method implementations into MediaTekRIL
+
+    protected void unexpectedMTKCall() {
+        Rlog.e(RILJ_LOG_TAG, "MTK-only method called on generic RIL!", new Exception());
+    }
+
+    @Override
+    public void supplyNetworkDepersonalization(String netpin, Message result)  {
+        unexpectedMTKCall();
+    }
+
+    /* M: SS part */
+    public void changeBarringPassword(String facility, String oldPwd, String newPwd,
+        String newCfm , Message result) {
+        unexpectedMTKCall();
+    }
+    /* M: SS part end */
+
+    @Override
+    public void setBandMode(int[] bandMode, Message response) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void handleCallSetupRequestFromSim(
+            boolean accept, int resCode, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void getCOLR(Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void setCOLP(boolean enable, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void getCOLP(Message response) {
+        unexpectedMTKCall();
+    }
+
+    // Added by M begin
+    @Override
+    public void iccGetATR(Message response) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void iccOpenChannelWithSw(String AID, Message result){
+        unexpectedMTKCall();
+    }
+    // Added by M end
+
+    @Override
+    public void setTrm(int mode, Message result) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void setOnPlmnChangeNotification(Handler h, int what, Object obj) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void unSetOnPlmnChangeNotification(Handler h) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void setOnRegistrationSuspended(Handler h, int what, Object obj) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void unSetOnRegistrationSuspended(Handler h) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void setResumeRegistration(int sessionId, Message response) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void queryModemType(Message response) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void storeModemType(int modemType, Message response) {
+        unexpectedMTKCall();
+    }
+
+    @Override
+    public void reloadModemType(int modemType, Message response) {
+        unexpectedMTKCall();
+    }
+
+    // M: Fast Dormancy
+    public void setScri(boolean forceRelease, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void setFDMode(int mode, int parameter1, int parameter2, Message response) {
+        unexpectedMTKCall();
+    }
+
+    //UTK start
+    public void getUtkLocalInfo(Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void requestUtkRefresh(int type, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void reportUtkServiceIsRunning(Message result) {
+        unexpectedMTKCall();
+    }
+
+    public void profileDownload(String profile, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void handleCallSetupRequestFromUim(boolean accept, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void queryUtkSetupMenuFromMD(String contents, Message response) {
+        unexpectedMTKCall();
+    }
+
+    public void setStkSwitchMode(int mode) {
+        unexpectedMTKCall();
+    }
+
+    public void setBipPsType(int type) {
+        unexpectedMTKCall();
+    }
+    //UTK end
 }
