@@ -523,6 +523,29 @@ public class UiccController extends Handler {
     private static final String OPERATOR_OP09 = "OP09";
     Phone[] sProxyPhones = null;
 
+    // MTK-START
+    public int getIccApplicationChannel(int slotId, int family) {
+        synchronized (mLock) {
+            int index = 0;
+            switch (family) {
+                case UiccController.APP_FAM_IMS:
+                    // FIXME: error handling for invaild slotId?
+                    index = mIsimSessionId[slotId];
+                    // Workaround: to avoid get sim status has open isim channel but java layer
+                    // haven't update channel id
+                    if (index == 0) {
+                        index = (getUiccCardApplication(slotId, family) != null) ? 1 : 0;
+                    }
+                    break;
+                default:
+                    if (DBG) log("unknown application");
+                    break;
+            }
+            return index;
+        }
+    }
+    // MTK-END
+
     //Notifies when card status changes
     public void registerForIccRecovery(Handler h, int what, Object obj) {
         synchronized (mLock) {
