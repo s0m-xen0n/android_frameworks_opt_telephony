@@ -1790,6 +1790,11 @@ public abstract class DcTrackerBase extends Handler {
     }
 
     protected void setInitialAttachApn() {
+        setInitialAttachApn(mAllApnSettings, mPreferredApn);
+    }
+
+    protected void setInitialAttachApn(ArrayList <ApnSetting> apnList,
+            ApnSetting preferredApn) {
         // MTK
         // M:[C2K][IRAT] Set initial attach APN for SVLTE. {@
         if (mPhone.getPhoneType() == PhoneConstants.PHONE_TYPE_CDMA) {
@@ -1854,14 +1859,14 @@ public abstract class DcTrackerBase extends Handler {
         ApnSetting defaultApnSetting = null;
         ApnSetting firstApnSetting = null;
 
-        log("setInitialApn: E mPreferredApn=" + mPreferredApn);
+        log("setInitialApn: E preferredApn=" + preferredApn);
 
-        if (mAllApnSettings != null && !mAllApnSettings.isEmpty()) {
-            firstApnSetting = mAllApnSettings.get(0);
+        if (apnList != null && !apnList.isEmpty()) {
+            firstApnSetting = apnList.get(0);
             log("setInitialApn: firstApnSetting=" + firstApnSetting);
 
             // Search for Initial APN setting and the first apn that can handle default
-            for (ApnSetting apn : mAllApnSettings) {
+            for (ApnSetting apn : apnList) {
                 // Can't use apn.canHandleType(), as that returns true for APNs that have no type.
                 if (ArrayUtils.contains(apn.types, PhoneConstants.APN_TYPE_IA) &&
                         apn.carrierEnabled) {
@@ -1888,9 +1893,9 @@ public abstract class DcTrackerBase extends Handler {
         if (iaApnSetting != null) {
             if (DBG) log("setInitialAttachApn: using iaApnSetting");
             initialAttachApnSetting = iaApnSetting;
-        } else if (mPreferredApn != null) {
-            if (DBG) log("setInitialAttachApn: using mPreferredApn");
-            initialAttachApnSetting = mPreferredApn;
+        } else if (preferredApn != null) {
+            if (DBG) log("setInitialAttachApn: using preferredApn");
+            initialAttachApnSetting = preferredApn;
         } else if (defaultApnSetting != null) {
             if (DBG) log("setInitialAttachApn: using defaultApnSetting");
             initialAttachApnSetting = defaultApnSetting;
