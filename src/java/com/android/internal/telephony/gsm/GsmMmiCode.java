@@ -33,7 +33,6 @@ import android.text.BidiFormatter;
 import android.text.TextDirectionHeuristics;
 import android.text.TextUtils;
 import android.telephony.Rlog;
-import android.util.Log;
 
 import static com.android.internal.telephony.CommandsInterface.*;
 import com.android.internal.telephony.gsm.SsData;
@@ -107,8 +106,6 @@ public final class GsmMmiCode extends Handler implements MmiCode {
     static final String SC_PUK          = "05";
     static final String SC_PUK2         = "052";
 
-    static final int SINGLE_DIGIT_DIALED =    1;
-
     //***** Event Constants
 
     static final int EVENT_SET_COMPLETE         = 1;
@@ -118,6 +115,12 @@ public final class GsmMmiCode extends Handler implements MmiCode {
     static final int EVENT_QUERY_COMPLETE       = 5;
     static final int EVENT_SET_CFF_COMPLETE     = 6;
     static final int EVENT_USSD_CANCEL_COMPLETE = 7;
+
+    /* M: SS part */
+    /// M: [mtk04070][111125][ALPS00093395]MTK added. @{
+    static final String USSD_HANDLED_BY_STK = "stk";
+    /// @}
+    /* M: SS part end */
 
     //***** Instance Variables
 
@@ -143,6 +146,9 @@ public final class GsmMmiCode extends Handler implements MmiCode {
     CharSequence mMessage;
     private boolean mIsSsInfo = false;
 
+    //For ALPS01471897
+    private boolean mUserInitiatedMMI = false;
+    //end
 
     //***** Class Variables
 
@@ -576,10 +582,21 @@ public final class GsmMmiCode extends Handler implements MmiCode {
         return ((Phone) mPhone);
     }
 
+    //For ALPS01471897
+    public void setUserInitiatedMMI(boolean userinit)
+    {
+       mUserInitiatedMMI = userinit;
+    }
+
+    public boolean getUserInitiatedMMI() {
+       return mUserInitiatedMMI;
+    }
+
     // inherited javadoc suffices
     @Override
     public void
     cancel() {
+        mPhone.mIsNetworkInitiatedUssd = false;
         // Complete or failed cannot be cancelled
         if (mState == State.COMPLETE || mState == State.FAILED) {
             return;
@@ -782,6 +799,36 @@ public final class GsmMmiCode extends Handler implements MmiCode {
         return mIsSsInfo;
     }
 
+    public static boolean isUssdNumber(String dialString, GSMPhone dialPhone, UiccCardApplication iccApp) {
+        String newDialString = PhoneNumberUtils.stripSeparators(dialString);
+        String networkPortion = PhoneNumberUtils.extractNetworkPortionAlt(newDialString);
+
+        GsmMmiCode mmi = GsmMmiCode.newFromDialString(networkPortion, dialPhone, iccApp);
+        if (mmi == null || mmi.isTemporaryModeCLIR()) {
+            return false;
+        }
+        else {
+            if (mmi.isShortCode()) {
+                return true;
+            } else if (mmi.mDialingNumber != null) {
+                return true;
+            } else if (mmi.mSc != null
+                    && (mmi.mSc.equals(SC_CLIP)
+                    || mmi.mSc.equals(SC_CLIR)
+                    || isServiceCodeCallForwarding(mmi.mSc)
+                    || isServiceCodeCallBarring(mmi.mSc)
+                    || mmi.mSc.equals(SC_PWD)
+                    || mmi.mSc.equals(SC_WAIT)
+                    || mmi.isPinPukCommand()
+                    )) {
+                return false;
+            } else if (mmi.mPoundString != null) {
+                return true;
+            }
+            return false;
+        }
+    }
+
     /** Process a MMI code or short code...anything that isn't a dialing number */
     void
     processCode () {
@@ -792,7 +839,13 @@ public final class GsmMmiCode extends Handler implements MmiCode {
                 sendUssd(mDialingNumber);
             } else if (mDialingNumber != null) {
                 // We should have no dialing numbers here
-                throw new RuntimeException ("Invalid or Unsupported MMI Code");
+
+                /* M: SS part */
+                /// M: [mtk04070][111125][ALPS00093395]MTK modified. @{
+                Rlog.w(LOG_TAG, "Special USSD Support:" + mPoundString + mDialingNumber);
+                sendUssd(mPoundString + mDialingNumber);
+                //throw new RuntimeException ("Invalid or Unsupported MMI Code");
+                /// @}
             } else if (mSc != null && mSc.equals(SC_CLIP)) {
                 Rlog.d(LOG_TAG, "is CLIP");
                 if (isInterrogate()) {
@@ -1010,7 +1063,10 @@ public final class GsmMmiCode extends Handler implements MmiCode {
     void
     onUssdFinished(String ussdMessage, boolean isUssdRequest) {
         if (mState == State.PENDING) {
-            if (ussdMessage == null) {
+            /* M: SS part */
+            /// M: [mtk04070][111125][ALPS00093395]Check the length of ussdMessage.
+            if (ussdMessage == null || ussdMessage.length() == 0) {
+            /* M: SS part end */
                 mMessage = mContext.getText(com.android.internal.R.string.mmiComplete);
             } else {
                 mMessage = ussdMessage;
@@ -1020,8 +1076,25 @@ public final class GsmMmiCode extends Handler implements MmiCode {
             if (!isUssdRequest) {
                 mState = State.COMPLETE;
             }
-
             mPhone.onMMIDone(this);
+        }
+    }
+
+    void
+    onUssdStkHandling(String ussdMessage, boolean isUssdRequest) {
+        if (mState == State.PENDING) {
+            if (ussdMessage == null || ussdMessage.length() == 0) {
+                mMessage = mContext.getText(com.android.internal.R.string.mmiComplete);
+            } else {
+                mMessage = ussdMessage;
+            }
+            mIsUssdRequest = isUssdRequest;
+            // If it's a request, leave it PENDING so that it's cancelable.
+            if (!isUssdRequest) {
+                mState = State.COMPLETE;
+            }
+            String userObjStringStk = USSD_HANDLED_BY_STK;
+            mPhone.onMMIDone(this, (Object) userObjStringStk);
         }
     }
 
@@ -1036,10 +1109,10 @@ public final class GsmMmiCode extends Handler implements MmiCode {
         if (mState == State.PENDING) {
             mState = State.FAILED;
             mMessage = mContext.getText(com.android.internal.R.string.mmiError);
-
             mPhone.onMMIDone(this);
         }
     }
+
 
     /**
      * Called from GSMPhone
@@ -1059,6 +1132,7 @@ public final class GsmMmiCode extends Handler implements MmiCode {
             mPhone.onMMIDone(this);
         }
     }
+
 
     void sendUssd(String ussdMessage) {
         // Treat this as a USSD string
@@ -1124,16 +1198,8 @@ public final class GsmMmiCode extends Handler implements MmiCode {
 
                 if (ar.exception != null) {
                     mState = State.FAILED;
-                    // suppress error pop-up for single dialed digits
-                    if (mDialingNumber != null &&
-                                mDialingNumber.length() == SINGLE_DIGIT_DIALED) {
-                        Log.w(
-                            LOG_TAG,
-                            mContext.getText(com.android.internal.R.string.mmiError).toString()
-                            );
-                    } else {
-                        mMessage = getErrorMessage(ar);
-                    }
+                    mMessage = getErrorMessage(ar);
+
                     mPhone.onMMIDone(this);
                 }
 
@@ -1626,5 +1692,22 @@ public final class GsmMmiCode extends Handler implements MmiCode {
         if (mPwd != null) sb.append(" pwd=" + mPwd);
         sb.append("}");
         return sb.toString();
+    }
+
+    /* M: SS part */
+    /// M: [mtk04070][111125][ALPS00093395]MTK proprietary methods. @{
+    static GsmMmiCode
+    newNetworkInitiatedUssdError(String ussdMessage,
+                                boolean isUssdRequest, GSMPhone phone, UiccCardApplication app) {
+        GsmMmiCode ret;
+
+        ret = new GsmMmiCode(phone, app);
+
+        ret.mMessage = ret.mContext.getText(com.android.internal.R.string.mmiError);
+        ret.mIsUssdRequest = isUssdRequest;
+
+        ret.mState = State.FAILED;
+
+        return ret;
     }
 }

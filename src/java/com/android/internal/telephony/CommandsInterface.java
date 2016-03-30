@@ -102,6 +102,15 @@ public interface CommandsInterface {
     static final int USSD_MODE_NOT_SUPPORTED = 4;
     static final int USSD_MODE_NW_TIMEOUT    = 5;
 
+    /* M: SS part */
+    //MTK-START [mtk04070][111118][ALPS00093395]MTK added
+    static final int USSD_SESSION_END               = 2;
+    static final int USSD_HANDLED_BY_STK            = 3;
+    static final int USSD_OPERATION_NOT_SUPPORTED   = 4;
+    static final int USSD_NETWORK_TIMEOUT           = 5;
+    //MTK-END [mtk04070][111118][ALPS00093395]MTK added
+    /* M: SS part end */
+
     // GSM SMS fail cause for acknowledgeLastIncomingSMS. From TS 23.040, 9.2.3.22.
     static final int GSM_SMS_FAIL_CAUSE_MEMORY_CAPACITY_EXCEEDED    = 0xD3;
     static final int GSM_SMS_FAIL_CAUSE_USIM_APP_TOOLKIT_BUSY       = 0xD4;

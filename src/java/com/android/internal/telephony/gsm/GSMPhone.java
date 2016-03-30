@@ -147,6 +147,8 @@ public class GSMPhone extends PhoneBase {
         }
     }
 
+    public boolean mIsNetworkInitiatedUssd = false;
+
     // Constructors
 
     public
@@ -977,6 +979,9 @@ public class GSMPhone extends PhoneBase {
     @Override
     public void sendUssdResponse(String ussdMessge) {
         GsmMmiCode mmi = GsmMmiCode.newFromUssdUserInput(ussdMessge, this, mUiccApplication.get());
+        /* M: SS part */
+        Rlog.d(LOG_TAG, "[sendUssdResponse]mPendingMMIs.add(mmi) + " + mmi);
+        /* M: SS part end */
         mPendingMMIs.add(mmi);
         mMmiRegistrants.notifyRegistrants(new AsyncResult(null, mmi, null));
         mmi.sendUssd(ussdMessge);
@@ -1470,9 +1475,34 @@ public class GSMPhone extends PhoneBase {
          * The exception is cancellation of an incoming USSD-REQUEST, which is
          * not on the list.
          */
+
+        /* M: SS part */
+        Rlog.d(LOG_TAG, "mPendingMMIs.remove(mmi) - " + mmi);
+        /* M: SS part end */
         if (mPendingMMIs.remove(mmi) || mmi.isUssdRequest() || mmi.isSsInfo()) {
             mMmiCompleteRegistrants.notifyRegistrants(
                 new AsyncResult(null, mmi, null));
+        }
+    }
+
+    /**
+     * Removes the given MMI from the pending list and notifies
+     * registrants that it is complete.
+     * @param mmi MMI that is done
+     * @param obj User object to deliver to application
+     */
+    public void onMMIDone(GsmMmiCode mmi, Object obj) {
+        /* Only notify complete if it's on the pending list.
+         * Otherwise, it's already been handled (eg, previously canceled).
+         * The exception is cancellation of an incoming USSD-REQUEST, which is
+         * not on the list.
+         */
+        /* M: SS part */
+        Rlog.d(LOG_TAG, "mPendingMMIs.remove(mmi) - " + mmi);
+        /* M: SS part end */
+        if (mPendingMMIs.remove(mmi) || mmi.isUssdRequest() || mmi.isSsInfo()) {
+            mMmiCompleteRegistrants.notifyRegistrants(
+                    new AsyncResult(obj, mmi, null));
         }
     }
 
@@ -1506,34 +1536,55 @@ public class GSMPhone extends PhoneBase {
         boolean isUssdError;
         boolean isUssdRequest;
         boolean isUssdRelease;
+        boolean isUssdhandleByStk;
+
+        Rlog.d(LOG_TAG, "onIncomingUSSD(): mIsNetworkInitiatedUssd = " + mIsNetworkInitiatedUssd);
 
         isUssdRequest
             = (ussdMode == CommandsInterface.USSD_MODE_REQUEST);
-
+        /* M: SS part */
+        //MTK-START [mtk04070][111118][ALPS00093395]MTK modified
         isUssdError
-            = (ussdMode != CommandsInterface.USSD_MODE_NOTIFY
-                && ussdMode != CommandsInterface.USSD_MODE_REQUEST);
+            = ((ussdMode == CommandsInterface.USSD_OPERATION_NOT_SUPPORTED)
+               || (ussdMode == CommandsInterface.USSD_NETWORK_TIMEOUT));
+        //MTK-END [mtk04070][111118][ALPS00093395]MTK modified
+
+        isUssdhandleByStk
+            = (ussdMode == CommandsInterface.USSD_HANDLED_BY_STK);
+        /* M: SS part end */
 
         isUssdRelease = (ussdMode == CommandsInterface.USSD_MODE_NW_RELEASE);
+        Rlog.d(LOG_TAG, "ussdMode= " + ussdMode);
+        Rlog.d(LOG_TAG, "isUssdRequest=" + isUssdRequest + " isUssdError= " + isUssdError);
 
         // See comments in GsmMmiCode.java
         // USSD requests aren't finished until one
         // of these two events happen
         GsmMmiCode found = null;
+        Rlog.d(LOG_TAG, "USSD:mPendingMMIs= " + mPendingMMIs + " size=" + mPendingMMIs.size());
         for (int i = 0, s = mPendingMMIs.size() ; i < s; i++) {
+            Rlog.d(LOG_TAG, "i= " + i + " isPending=" + mPendingMMIs.get(i).isPendingUSSD());
             if(mPendingMMIs.get(i).isPendingUSSD()) {
                 found = mPendingMMIs.get(i);
+                Rlog.d(LOG_TAG, "found = " + found);
                 break;
             }
         }
 
         if (found != null) {
             // Complete pending USSD
-
-            if (isUssdRelease) {
+            /* M: SS part */
+            //For ALPS01471897
+            Rlog.d(LOG_TAG, "setUserInitiatedMMI  TRUE");
+            found.setUserInitiatedMMI(true);
+            /* M: SS part end */
+            if (isUssdRelease && mIsNetworkInitiatedUssd) {
+                Rlog.d(LOG_TAG, "onIncomingUSSD(): USSD_MODE_NW_RELEASE.");
                 found.onUssdRelease();
             } else if (isUssdError) {
                 found.onUssdFinishedError();
+            } else if (isUssdhandleByStk) {
+                found.onUssdStkHandling(ussdMessage, isUssdRequest);
             } else {
                 found.onUssdFinished(ussdMessage, isUssdRequest);
             }
@@ -1542,6 +1593,13 @@ public class GSMPhone extends PhoneBase {
 
             // ignore everything that isnt a Notify or a Request
             // also, discard if there is no message to present
+
+            /* M: SS part */
+            //For ALPS01471897
+            Rlog.d(LOG_TAG, "The default value of UserInitiatedMMI is FALSE");
+            mIsNetworkInitiatedUssd = true;
+            Rlog.d(LOG_TAG, "onIncomingUSSD(): Network Initialized USSD");
+
             if (!isUssdError && ussdMessage != null) {
                 GsmMmiCode mmi;
                 mmi = GsmMmiCode.newNetworkInitiatedUssd(ussdMessage,
@@ -1549,8 +1607,25 @@ public class GSMPhone extends PhoneBase {
                                                    GSMPhone.this,
                                                    mUiccApplication.get());
                 onNetworkInitiatedUssd(mmi);
+
+            //MTK-START [mtk04070][111118][ALPS00093395]MTK added
+            } else if (isUssdError) {
+                GsmMmiCode mmi;
+                mmi = GsmMmiCode.newNetworkInitiatedUssdError(ussdMessage,
+                                                   isUssdRequest,
+                                                   GSMPhone.this,
+                                                   mUiccApplication.get());
+                onNetworkInitiatedUssd(mmi);
+            //MTK-END [mtk04070][111118][ALPS00093395]MTK added
             }
+            /* M: SS part end */
         }
+
+        /* M: SS part */
+        if (isUssdRelease || isUssdError) {
+            mIsNetworkInitiatedUssd = false;
+        }
+        /* M: SS part end */
     }
 
     /**

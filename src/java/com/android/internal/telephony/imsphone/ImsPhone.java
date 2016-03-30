@@ -104,6 +104,14 @@ public class ImsPhone extends ImsPhoneBase {
 
     public static final String CS_FALLBACK = "cs_fallback";
 
+    /// M: @{
+    /**
+     * Used as the message in CallStateException.
+     * We don't support dialing a USSD number while there is an existing IMS call.
+     */
+    public static final String USSD_DURING_IMS_INCALL = "ussd_during_ims_incall";
+    /// @}
+
     static final int RESTART_ECM_TIMER = 0; // restart Ecm timer
     static final int CANCEL_ECM_TIMER = 1; // cancel Ecm timer
 
@@ -531,6 +539,16 @@ public class ImsPhone extends ImsPhoneBase {
 
         return result;
     }
+
+    /// M: for USSD over IMS workaround. @{
+    private boolean isUssdDuringInCall(ImsPhoneMmiCode mmi) {
+        if (mmi == null || !mmi.isUssdNumber()) {
+            return false;
+        }
+
+        return isInCall();
+    }
+    /// @}
 
     boolean isInCall() {
         ImsPhoneCall.State foregroundCallState = getForegroundCall().getState();

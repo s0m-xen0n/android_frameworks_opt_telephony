@@ -1797,4 +1797,25 @@ public final class ImsPhoneMmiCode extends Handler implements MmiCode {
         sb.append("}");
         return sb.toString();
     }
+
+    /// M: for SS part. @{
+    /**
+     Utility function to check if it is USSD number.
+     @return boolean true if this an USSD number.
+    */
+    public boolean isUssdNumber() {
+        if (isTemporaryModeCLIR()) {
+            return false;
+        } else {
+            if (isShortCode()) {
+                return true;
+            } else if (mDialingNumber != null) {
+                return true;
+            } else if (mPoundString != null) {
+                return true;
+            }
+            return false;
+        }
+    }
+    /// @}
 }
