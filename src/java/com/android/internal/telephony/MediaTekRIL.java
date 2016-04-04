@@ -296,7 +296,7 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             case RIL_REQUEST_SIGNAL_STRENGTH: ret =  responseSignalStrength(p); break;
             case RIL_REQUEST_VOICE_REGISTRATION_STATE: ret =  responseStrings(p); break;
             case RIL_REQUEST_DATA_REGISTRATION_STATE: ret =  responseStrings(p); break;
-            case RIL_REQUEST_OPERATOR: ret =  responseStrings(p); break;
+            case RIL_REQUEST_OPERATOR: ret =  responseOperator(p); break;
             case RIL_REQUEST_RADIO_POWER: ret =  responseVoid(p); break;
             case RIL_REQUEST_DTMF: ret =  responseVoid(p); break;
             case RIL_REQUEST_SEND_SMS: ret =  responseSMS(p); break;
@@ -2738,6 +2738,47 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 riljLog("responseCallList: call ended, testing emergency call," +
                             " notify ECM Registrants");
                 mEmergencyCallbackModeRegistrant.notifyRegistrant();
+            }
+        }
+
+        return response;
+    }
+
+    // slightly modified from the original MediaTekRIL
+    private Object
+    responseOperator(Parcel p) {
+        int num;
+        String response[] = null;
+
+        response = p.readStringArray();
+
+        for (int i = 0; i < response.length; i++) {
+            if((response[i] != null) && (response[i].startsWith("uCs2") == true))
+            {
+                riljLog("responseOperator handling UCS2 format name: response[" + i + "]");
+                try{
+                    response[i] = new String(IccUtils.hexStringToBytes(response[i].substring(4)),"UTF-16");
+                }catch(UnsupportedEncodingException ex){
+                    riljLog("responseOperatorInfos UnsupportedEncodingException");
+                }
+            }
+        }
+
+        // NOTE: the original code seemingly has some nontrivial SpnOverride
+        // modifications, so I'm not going to port that.
+        if (response.length > 2 && response[2] != null) {
+            if (response[0] != null && (response[0].equals("") || response[0].equals(response[2]))) {
+                // xen0n: seems the Operators class is now gone
+                // Operators init = new Operators ();
+                // String temp = init.unOptimizedOperatorReplace(response[2]);
+
+                // NOTE: using MTK methods here! (all the used methods are not visible from this class)
+                SpnOverride spnOverride = SpnOverride.getInstance();
+                final String mccmnc = response[2];
+                final String temp = spnOverride.containsCarrierEx(mccmnc) ? spnOverride.getSpnEx(mccmnc) : mccmnc;
+                riljLog("lookup RIL responseOperator() " + response[2] + " gave " + temp + " was " + response[0] + "/" + response[1] + " before.");
+                response[0] = temp;
+                response[1] = temp;
             }
         }
 
