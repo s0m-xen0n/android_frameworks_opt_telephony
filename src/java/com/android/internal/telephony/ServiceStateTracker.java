@@ -186,6 +186,13 @@ public abstract class ServiceStateTracker extends Handler {
     protected static final int EVENT_IMS_STATE_DONE                    = 47;
     protected static final int EVENT_IMS_CAPABILITY_CHANGED            = 48;
 
+    // MTK events
+    // MTK TODO
+    protected static final int EVENT_SET_IMS_ENABLED_DONE = 109;
+    protected static final int EVENT_SET_IMS_DISABLE_DONE = 110;
+    protected static final int EVENT_IMS_DISABLED_URC = 111;
+    protected static final int EVENT_IMS_REGISTRATION_INFO = 112;
+
     protected static final String TIMEZONE_PROPERTY = "persist.sys.timezone";
 
     /**
