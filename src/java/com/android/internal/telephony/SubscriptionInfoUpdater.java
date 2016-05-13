@@ -405,9 +405,12 @@ public class SubscriptionInfoUpdater extends Handler {
             }
             TelephonyManager tm = TelephonyManager.getDefault();
             String msisdn = tm.getLine1NumberForSubscriber(subId);
+            String mtkMsisdn = TelephonyManager.from(mContext).getLine1NumberForSubscriber(subId);
+            logd("msisdn = " + msisdn + "; mtkMsisdn = " + mtkMsisdn);
             ContentResolver contentResolver = mContext.getContentResolver();
 
             if (msisdn != null) {
+                SubscriptionController.getInstance().setDisplayNumber(msisdn, subId);
                 ContentValues number = new ContentValues(1);
                 number.put(SubscriptionManager.NUMBER, msisdn);
                 contentResolver.update(SubscriptionManager.CONTENT_URI, number,

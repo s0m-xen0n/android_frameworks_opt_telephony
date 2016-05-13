@@ -808,7 +808,8 @@ public class SIMRecords extends IccRecords {
                 mMsisdn = adn.getNumber();
                 mMsisdnTag = adn.getAlphaTag();
 
-                log("MSISDN: " + /*mMsisdn*/ "xxxxxxx");
+                // log("MSISDN: " + /*mMsisdn*/ "xxxxxxx");
+                log("MSISDN: " + mMsisdn);
             break;
 
             case EVENT_SET_MSISDN_DONE:
