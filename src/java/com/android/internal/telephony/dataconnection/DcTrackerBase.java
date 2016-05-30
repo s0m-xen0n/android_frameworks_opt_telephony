@@ -841,7 +841,9 @@ public abstract class DcTrackerBase extends Handler {
     public void setDataEnabled(boolean enable) {
         Message msg = obtainMessage(DctConstants.CMD_SET_USER_DATA_ENABLE);
         msg.arg1 = enable ? 1 : 0;
-        if (DBG) log("setDataEnabled: sendMessage: enable=" + enable);
+        msg.arg2 = mPhone.getSubId();
+        if (DBG) log("setDataEnabled: sendMessage: enable=" + enable +
+                ", subId=" + mPhone.getSubId());
         sendMessage(msg);
     }
 
@@ -992,8 +994,9 @@ public abstract class DcTrackerBase extends Handler {
             }
             case DctConstants.CMD_SET_USER_DATA_ENABLE: {
                 final boolean enabled = (msg.arg1 == DctConstants.ENABLED) ? true : false;
-                if (DBG) log("CMD_SET_USER_DATA_ENABLE enabled=" + enabled);
-                onSetUserDataEnabled(enabled);
+                final int subId = msg.arg2;
+                if (DBG) log("CMD_SET_USER_DATA_ENABLE enabled=" + enabled + ", subId=" + subId);
+                onSetUserDataEnabled(enabled, subId);
                 break;
             }
             case DctConstants.CMD_SET_DEPENDENCY_MET: {
@@ -1383,6 +1386,10 @@ public abstract class DcTrackerBase extends Handler {
     public abstract boolean isDisconnected();
 
     protected void onSetUserDataEnabled(boolean enabled) {
+        onSetUserDataEnabled(enabled, mPhone.getSubId());
+    }
+
+    protected void onSetUserDataEnabled(boolean enabled, int subId) {
         synchronized (mDataEnabledLock) {
             if (mUserDataEnabled != enabled) {
                 mUserDataEnabled = enabled;
@@ -1391,8 +1398,7 @@ public abstract class DcTrackerBase extends Handler {
                 if (TelephonyManager.getDefault().getSimCount() == 1) {
                     Settings.Global.putInt(mResolver, Settings.Global.MOBILE_DATA, enabled ? 1 : 0);
                 } else {
-                    int phoneSubId = mPhone.getSubId();
-                    Settings.Global.putInt(mResolver, Settings.Global.MOBILE_DATA + phoneSubId,
+                    Settings.Global.putInt(mResolver, Settings.Global.MOBILE_DATA + subId,
                             enabled ? 1 : 0);
                 }
                 if (getDataOnRoamingEnabled() == false &&
