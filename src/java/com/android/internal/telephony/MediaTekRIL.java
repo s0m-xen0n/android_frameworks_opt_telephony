@@ -1062,9 +1062,13 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
 
             case RIL_UNSOL_INCOMING_CALL_INDICATION:
                 if (RILJ_LOGD) unsljLogvRet(response, ret);
-                if (mIncomingCallIndicationRegistrant != null) {
-                    mIncomingCallIndicationRegistrant.notifyRegistrant(new AsyncResult(null, ret, null));
-                }
+                // example of how mindless copying can adversely affect functionality
+                // if (mIncomingCallIndicationRegistrant != null) {
+                //     mIncomingCallIndicationRegistrant.notifyRegistrant(new AsyncResult(null, ret, null));
+                // }
+                setCallIndication((String[])ret);
+                rewindAndReplace = true;
+                newResponseCode = RIL_UNSOL_RESPONSE_CALL_STATE_CHANGED;
                 break;
 
             case RIL_UNSOL_CIPHER_INDICATION:
@@ -3997,6 +4001,15 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
                 + " " + mode + ", " + callId + ", " + seqNumber);
 
         send(rr);
+    }
+
+    // ported from CM12.1 MediaTekRIL
+    private void setCallIndication(final String[] incomingCallInfo) {
+        final int callId = Integer.parseInt(incomingCallInfo[0]);
+        final int callMode = Integer.parseInt(incomingCallInfo[3]);
+        final int seqNumber = Integer.parseInt(incomingCallInfo[4]);
+        // just call into the MTK impl
+        setCallIndication(callMode, callId, seqNumber, null);
     }
 
     public void
