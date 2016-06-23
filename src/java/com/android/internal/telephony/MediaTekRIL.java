@@ -175,11 +175,11 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
     /// @}
 
     public MediaTekRIL(Context context, int networkMode, int cdmaSubscription) {
-	    super(context, networkMode, cdmaSubscription, null);
+            super(context, networkMode, cdmaSubscription, null);
     }
 
     public MediaTekRIL(Context context, int networkMode, int cdmaSubscription, Integer instanceId) {
-	    super(context, networkMode, cdmaSubscription, instanceId);
+            super(context, networkMode, cdmaSubscription, instanceId);
     }
 
     // all that C&P just for responseOperator overriding?
@@ -1894,11 +1894,11 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         return messageLength;
     }
 
-	protected RILReceiver createRILReceiver() {
+        protected RILReceiver createRILReceiver() {
         return new MTKRILReceiver();
     }
 
-	protected class MTKRILReceiver extends RILReceiver {
+        protected class MTKRILReceiver extends RILReceiver {
         byte[] buffer;
 
         protected MTKRILReceiver() {
@@ -2056,7 +2056,7 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         int newsim = SystemProperties.getInt("gsm.3gswitch", 0);
         newsim = newsim - 1;
         if(!(simId==newsim)) {
-	    int prop = SystemProperties.getInt("gsm.3gswitch", 0);
+            int prop = SystemProperties.getInt("gsm.3gswitch", 0);
             if (RILJ_LOGD) riljLog("Setting data subscription on SIM" + (simId + 1) + " mInstanceid=" + mInstanceId + " gsm.3gswitch=" + prop);
             RILRequest rr = RILRequest.obtain(RIL_REQUEST_SET_3G_CAPABILITY, null);
             rr.mParcel.writeInt(1);
@@ -2064,19 +2064,19 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
             rr.mParcel.writeInt(realsim);
             if (RILJ_LOGD) riljLog(rr.serialString() + "> " + requestToString(rr.mRequest));
             send(rr);
-	    try {
+            try {
                 Thread.sleep(1000);
             } catch (InterruptedException er) {
             }
-	    resetRadio(null);
-	    try {
+            resetRadio(null);
+            try {
                 Thread.sleep(4*1000);
             } catch (InterruptedException er) {
             }
-	}
-	else {
+        }
+        else {
             if (RILJ_LOGD) riljLog("Not setting data subscription on same SIM");
-	}
+        }
     }
 
     public void setDataAllowed(boolean allowed, Message result) {
