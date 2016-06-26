@@ -2146,6 +2146,25 @@ public class MediaTekRIL extends RIL implements CommandsInterface {
         }
     }
 
+    // ported from sprout RIL
+    protected Object
+    responseFailCause(Parcel p) {
+        int numInts;
+        int response[];
+
+        numInts = p.readInt();
+        response = new int[numInts];
+        for (int i = 0 ; i < numInts ; i++) {
+            response[i] = p.readInt();
+        }
+        LastCallFailCause failCause = new LastCallFailCause();
+        failCause.causeCode = response[0];
+        if (p.dataAvail() > 0) {
+          failCause.vendorCause = p.readString();
+        }
+        return failCause;
+    }
+
     // CommandsInterface impl
 
     public void setUiccSubscription(int slotId, int appIndex, int subId,
